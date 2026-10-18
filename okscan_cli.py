@@ -31,8 +31,8 @@ def main():
                "  okscan-cli D:\\Music --range 0   (без приведения BPM)",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('paths', nargs='*', help="файлы или папки (папки — со всеми подпапками)")
-    p.add_argument('--range', type=int, default=88, metavar='LOW',
-                   help="приводить BPM к диапазону от LOW до 2×LOW, по умолчанию 88 (88–176); 0 — не приводить")
+    p.add_argument('--range', type=int, default=50, metavar='LOW',
+                   help="приводить BPM к диапазону от LOW до 2×LOW, по умолчанию 50 (50–100, быстрее 100 делится пополам); 0 — не приводить")
     p.add_argument('--csv', metavar='FILE', help="сохранить результаты в CSV (разделитель «;»)")
     p.add_argument('--workers', type=int, default=1, help="сколько файлов анализировать одновременно (1–8)")
     p.add_argument('--selftest', action='store_true', help="проверить движок на синтетических треках")

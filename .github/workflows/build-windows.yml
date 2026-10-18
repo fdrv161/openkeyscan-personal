@@ -62,7 +62,7 @@ jobs:
           & $iscc /Qp "/DAppVersion=${{ steps.ver.outputs.version }}" installer\okscan.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: OpenKeyScan-Personal-Setup-${{ steps.ver.outputs.version }}
           path: dist/OpenKeyScan-Personal-Setup-*.exe
