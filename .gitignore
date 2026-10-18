@@ -201,3 +201,7 @@ cython_debug/
 datasets
 test_output.txt
 checkpoints/custom
+
+# Личная сборка под Windows
+.venv/
+assets/

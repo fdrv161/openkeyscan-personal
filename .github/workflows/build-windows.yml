@@ -1,0 +1,76 @@
+# Сборка установщика под Windows на GitHub Actions.
+# Запускается при каждом push, вручную (Actions → Run workflow) и по тегу vX.Y.Z.
+# По тегу установщик выкладывается в Releases, в остальных случаях — в Artifacts запуска.
+name: Сборка под Windows
+
+on:
+  push:
+    branches: [main, windows-personal]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # нужно только для выкладки релиза по тегу
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      PYTHONIOENCODING: utf-8
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: requirements-win.lock.txt
+
+      - name: Установка зависимостей
+        run: python -m pip install -r requirements-win.lock.txt
+
+      - name: Скачивание весов DeepRhythm и NVDA Controller Client (с проверкой SHA-256)
+        run: python tools/fetch_assets.py
+
+      - name: Самопроверка движка (Python)
+        run: python -W ignore -m okscan.selftest
+
+      - name: Сборка PyInstaller
+        run: pyinstaller --noconfirm --log-level WARN okscan.spec
+
+      - name: Самопроверка собранной программы
+        run: dist\OpenKeyScan\okscan-cli.exe --selftest
+
+      - name: Версия
+        id: ver
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=0.0.${GITHUB_RUN_NUMBER}-dev" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Установщик Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+          }
+          & $iscc /Qp "/DAppVersion=${{ steps.ver.outputs.version }}" installer\okscan.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OpenKeyScan-Personal-Setup-${{ steps.ver.outputs.version }}
+          path: dist/OpenKeyScan-Personal-Setup-*.exe
+          retention-days: 30
+
+      - name: Релиз по тегу
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release create "$GITHUB_REF_NAME" dist/OpenKeyScan-Personal-Setup-*.exe --title "$GITHUB_REF_NAME" --notes "Установщик личной сборки OpenKeyScan под Windows x64."

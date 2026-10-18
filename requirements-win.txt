@@ -1,0 +1,11 @@
+# Зависимости личной сборки под Windows x64 (Python 3.14).
+# Версии закреплены, чтобы сборка на GitHub Actions давала тот же результат, что и локально.
+# torch с PyPI под Windows — это версия только для процессора (без CUDA), она и нужна.
+torch==2.14.1
+# librosa держим на 0.11.0: на её CQT обучалась модель тональности.
+librosa==0.11.0
+av==19.0.1
+# nnAudio нужна для BPM (DeepRhythm); версия та же, что у DeepRhythm.
+nnAudio==0.3.3
+wxPython==4.3.2
+soundfile
