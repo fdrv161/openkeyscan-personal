@@ -1,11 +1,11 @@
 # Сборка архива со скриптами REAPER и движком анализа под Windows на GitHub Actions.
-# Запускается при каждом push, вручную (Actions → Run workflow) и по тегу vX.Y.Z.
-# По тегу архив выкладывается в Releases, в остальных случаях — в Artifacts запуска.
+# Запускается только по тегу vX.Y.Z и вручную (Actions → Run workflow): репозиторий
+# приватный, минуты и место под архивы ограничены, поэтому на каждый push не собираем.
+# По тегу архив выкладывается в Releases, при ручном запуске — в Artifacts на 7 дней.
 name: Сборка под Windows
 
 on:
   push:
-    branches: [main, windows-personal]
     tags: ['v*']
   workflow_dispatch:
 
@@ -69,7 +69,7 @@ jobs:
         with:
           name: OpenKeyScan-REAPER-${{ steps.ver.outputs.version }}
           path: dist/package/
-          retention-days: 30
+          retention-days: 7
 
       - name: Релиз по тегу
         if: startsWith(github.ref, 'refs/tags/v')
