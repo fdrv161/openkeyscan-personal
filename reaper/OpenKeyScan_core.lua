@@ -109,6 +109,47 @@ local function shift_item(item, delta)
   return true
 end
 
+-- Порог «здесь начинается звук» (−50 дБFS) — тот же, что у движка (LEAD_LEVEL).
+local LEAD_LEVEL = 10 ^ (-50 / 20)
+
+-- Насколько шкала REAPER сдвинута относительно шкалы движка, в секундах исходного файла.
+-- Декодеры могут по-разному срезать начало: у MP3 без заголовка LAME разница
+-- доходит до десятков миллисекунд, и бит вставал бы мимо такта. Движок сообщает,
+-- где в файле начинается звук (lead); здесь то же самое меряем через REAPER.
+local function decoder_offset(take, lead)
+  if not lead then return 0 end
+  local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+  local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+  if lead < offs then return 0 end   -- начало звука обрезано в элементе, сверить нечем
+  local src = reaper.GetMediaItemTake_Source(take)
+  local sr = reaper.GetMediaSourceSampleRate(src)
+  local nch = math.max(1, reaper.GetMediaSourceNumChannels(src))
+  if sr <= 0 then return 0 end
+  -- окно 0,4 с от «за 0,2 с до начала звука по движку» (секунды файла), но не раньше начала дубля
+  local from = math.max(offs, lead - 0.2)
+  local start = (from - offs) / rate
+  local n = math.floor(0.4 * sr / rate)
+  local buf = reaper.new_array(n * nch)
+  local acc = reaper.CreateTakeAudioAccessor(take)
+  local ok = reaper.GetAudioAccessorSamples(acc, sr, nch, start, n, buf)
+  reaper.DestroyAudioAccessor(acc)
+  if ok ~= 1 then return 0 end
+  local data = buf.table()
+  for i = 1, #data do
+    if math.abs(data[i]) > LEAD_LEVEL then
+      local idx = math.floor((i - 1) / nch)
+      -- звук есть с первого же отсчёта, а окно начато не с начала файла:
+      -- настоящего начала звука не видно, сверить нельзя
+      if idx == 0 and from > 0 then return 0 end
+      local found = from + idx / sr * rate
+      local delta = found - lead
+      -- больше 0,15 с — это уже не декодер (эффекты, другой файл), не трогаем
+      return math.abs(delta) < 0.15 and delta or 0
+    end
+  end
+  return 0
+end
+
 local function describe_shift(delta)
   local ms = math.floor(math.abs(delta) * 1000 + 0.5)
   local amount = ms < 1000 and (ms .. " мс") or (string.format("%.2f", math.abs(delta)) .. " с")
@@ -118,7 +159,7 @@ end
 -- Ставит первую сильную долю бита (секунды от начала файла) на ближайшую линию
 -- такта и сдвигает на столько же ВСЕ элементы проекта, чтобы ничего не разъехалось.
 -- Возвращает фразу для итогового сообщения.
-local function align_project_to_bar(it, downbeat, bpm)
+local function align_project_to_bar(it, downbeat, bpm, lead)
   if not downbeat then
     return "Первую сильную долю найти не удалось, элементы не сдвинуты"
   end
@@ -133,6 +174,11 @@ local function align_project_to_bar(it, downbeat, bpm)
   local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
   local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
   local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+  local fix = decoder_offset(take, lead)
+  downbeat = downbeat + fix
+  -- О поправке говорим, только если она заметна: так видно, что сверка сработала.
+  local note = math.abs(fix) >= 0.002
+      and (", учтён сдвиг начала файла " .. math.floor(math.abs(fix) * 1000 + 0.5) .. " мс") or ""
   -- Если начало элемента обрезано дальше первой доли, берём первый такт внутри элемента.
   if downbeat < offs and bpm then
     local bar = 4 * 60 / bpm
@@ -147,7 +193,7 @@ local function align_project_to_bar(it, downbeat, bpm)
   local target = (beat_time - here <= nextbar - beat_time) and here or nextbar
   local delta = target - beat_time
   if math.abs(delta) < 0.0005 then
-    return "Бит уже стоит по сетке"
+    return "Бит уже стоит по сетке" .. note
   end
 
   local trimmed = false
@@ -155,7 +201,7 @@ local function align_project_to_bar(it, downbeat, bpm)
     if shift_item(reaper.GetMediaItem(0, i), delta) then trimmed = true end
   end
   return "Все элементы сдвинуты " .. describe_shift(delta) .. ", сильная доля бита на такте " ..
-         (measure + (target == here and 1 or 2)) .. (trimmed and ", начало подрезано" or "")
+         (measure + (target == here and 1 or 2)) .. (trimmed and ", начало подрезано" or "") .. note
 end
 
 local function busy_since()
@@ -244,7 +290,7 @@ function M.run(mode)
         return
       end
       results[c[1]] = { bpm = c[2], camelot = c[3], key = c[4], openkey = c[5], err = c[6],
-                        downbeat = tonumber(c[7] or "") }
+                        downbeat = tonumber(c[7] or ""), lead = tonumber(c[8] or "") }
     end
 
     local parts, first_bpm, first_item = {}, nil, nil
@@ -286,7 +332,7 @@ function M.run(mode)
                         or (". Тональность записана в имена дорожек: " .. renamed))
         end
         if first_item then
-          msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm)
+          msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm, first_item.r.lead)
         end
       end)
       reaper.Undo_EndBlock("OpenKeyScan: темп, тональность и выравнивание по такту", -1)

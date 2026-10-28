@@ -43,6 +43,9 @@ BPM_MAX_CLIPS = 64
 # Для уточнения BPM хватает 10 минут из середины трека.
 REFINE_MAX_SECONDS = 600
 
+# Порог «здесь начинается звук» (−50 дБFS) — тот же, что в скрипте REAPER (LEAD_LEVEL).
+LEAD_LEVEL = 10 ** (-50 / 20)
+
 # Огибающие атак: шаг 128 отсчётов (~5,8 мс при 22 050 Гц), окно 2048.
 ONSET_HOP = 128
 ONSET_NFFT = 2048
@@ -67,9 +70,24 @@ def openkey_of(camelot):
     return f"{(num - 8) % 12 + 1}{'m' if mode == 'A' else 'd'}"
 
 
+def _first_sound(frame):
+    """Номер первого отсчёта кадра громче LEAD_LEVEL по любому каналу или None."""
+    a = frame.to_ndarray()
+    if not frame.format.is_planar:
+        a = a.reshape(-1, len(frame.layout.channels)).T
+    if a.dtype.kind == 'i':
+        a = a / np.iinfo(a.dtype).max
+    hit = np.nonzero((np.abs(a) > LEAD_LEVEL).any(axis=0))[0]
+    return int(hit[0]) if len(hit) else None
+
+
 def decode_audio(path):
     """Декодирует любой формат через PyAV (FFmpeg внутри) в моно float32, 44,1 кГц,
-    пик 0,95 — так же, как оригинальный сервер делает для MP3 на Windows."""
+    пик 0,95 — так же, как оригинальный сервер делает для MP3 на Windows.
+
+    Возвращает (звук, начало звука в секундах). Начало считается по исходным
+    отсчётам до сведения в моно — так же его меряет скрипт REAPER, и по разнице
+    видно, по-разному ли FFmpeg и REAPER обрезают начало файла."""
     container = av.open(str(path))
     try:
         if not container.streams.audio:
@@ -77,7 +95,13 @@ def decode_audio(path):
         stream = container.streams.audio[0]
         resampler = av.AudioResampler(format='flt', layout='mono', rate=KEY_SR)
         chunks = []
+        pos, lead = 0, None
         for frame in container.decode(stream):
+            if lead is None:
+                i = _first_sound(frame)
+                if i is not None:
+                    lead = (pos + i) / frame.sample_rate
+                pos += frame.samples
             for out in resampler.resample(frame):
                 chunks.append(out.to_ndarray()[0])
         for out in resampler.resample(None):
@@ -90,7 +114,7 @@ def decode_audio(path):
     peak = np.abs(y).max()
     if peak > 0:
         y = y / peak * 0.95
-    return y
+    return y, lead
 
 
 def key_spectrogram(y44):
@@ -300,7 +324,7 @@ class Analyzer:
         try:
             if Path(path).suffix.lower() not in SUPPORTED_FORMATS:
                 raise ValueError("формат не поддерживается")
-            y44 = decode_audio(path)
+            y44, res.lead = decode_audio(path)
             if len(y44) < KEY_SR * 3:
                 raise ValueError("трек короче 3 секунд")
             camelot, key_name, bpm_raw, conf, downbeat = self._analyze_waveform(y44)

@@ -15,7 +15,7 @@ SUPPORTED_FORMATS = {'.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a', '.aac',
 
 # Номер версии алгоритма в кэше: менять при любой правке, от которой меняется результат,
 # иначе останутся старые ответы.
-CACHE_VERSION = 1
+CACHE_VERSION = 2   # 2 — добавлено начало звука (lead)
 CACHE_LIMIT = 5000   # столько последних файлов помнит кэш
 
 
@@ -29,6 +29,7 @@ class Result:
     bpm_raw: float | None = None    # как определил алгоритм
     bpm_confidence: float | None = None
     downbeat: float | None = None   # первая сильная доля, секунды от начала файла
+    lead: float | None = None       # где в файле начинается звук, с — для сверки шкалы с REAPER
     error: str = ''
 
 
