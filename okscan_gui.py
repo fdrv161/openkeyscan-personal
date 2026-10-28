@@ -25,7 +25,7 @@ from okscan.library import (Track, collect_audio, write_csv,  # noqa: E402
 from okscan import speech  # noqa: E402
 
 APP_NAME = "OpenKeyScan — личная сборка"
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 SETTINGS_FILE = _APPDIR / 'settings.json'
 
 # Нижняя граница диапазона BPM -> подпись. Диапазон — [low, 2*low].

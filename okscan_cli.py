@@ -6,6 +6,7 @@
   okscan-cli "D:\\Music" --csv result.csv
   okscan-cli "D:\\Music" --range 70
   okscan-cli --selftest
+  okscan-cli --list files.txt --out result.tsv   (для скрипта REAPER)
 
 Коды выхода: 0 — всё проанализировано, 1 — были ошибки в отдельных файлах,
 2 — неверные параметры или ничего не найдено.
@@ -36,22 +37,54 @@ def main():
     p.add_argument('--csv', metavar='FILE', help="сохранить результаты в CSV (разделитель «;»)")
     p.add_argument('--workers', type=int, default=1, help="сколько файлов анализировать одновременно (1–8)")
     p.add_argument('--selftest', action='store_true', help="проверить движок на синтетических треках")
+    p.add_argument('--list', metavar='FILE', help="список файлов в UTF-8, по одному пути в строке")
+    p.add_argument('--out', metavar='FILE',
+                   help="записать результаты в TSV (UTF-8): путь, BPM, Camelot, тональность, Open Key, ошибка. "
+                        "Файл появляется целиком в самом конце — по нему скрипт понимает, что анализ закончен")
     args = p.parse_args()
+    if args.out:
+        # Что бы ни случилось, файл результата должен появиться — иначе скрипт REAPER ждал бы впустую.
+        try:
+            return run(p, args)
+        except Exception as e:
+            write_tsv(args.out, [['ERROR', '', '', '', '', f"сбой анализатора: {e}"]])
+            return 2
+    return run(p, args)
 
+
+def write_tsv(path, rows):
+    """Пишет во временный файл и переименовывает: читатель никогда не увидит половину результата."""
+    tmp = f"{path}.part"
+    with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
+        for row in rows:
+            f.write('\t'.join(str(c).replace('\t', ' ').replace('\n', ' ') for c in row) + '\n')
+    os.replace(tmp, path)
+
+
+def run(p, args):
     if args.selftest:
         from okscan.selftest import main as selftest
         return selftest()
-    if not args.paths:
-        p.print_help()
+    listed = []
+    if args.list:
+        listed = [ln.strip() for ln in Path(args.list).read_text(encoding='utf-8-sig').splitlines() if ln.strip()]
+    if not args.paths and not listed:
+        if args.out:
+            write_tsv(args.out, [['ERROR', '', '', '', '', "не передано ни одного файла"]])
+        else:
+            p.print_help()
         return 2
 
     from concurrent.futures import ThreadPoolExecutor
     from okscan.analyzer import Analyzer, format_bpm
     from okscan.library import collect_audio, write_csv, Track
 
-    files = collect_audio(args.paths)
+    # Файлы из --list берём как есть: о неподдерживаемом формате анализатор скажет сам.
+    files = listed + collect_audio(args.paths)
     if not files:
         print("Ошибка: не найдено ни одного поддерживаемого аудиофайла. Проверьте путь.", file=sys.stderr)
+        if args.out:
+            write_tsv(args.out, [['ERROR', '', '', '', '', "не найдено ни одного аудиофайла"]])
         return 2
     workers = max(1, min(8, args.workers))
     print(f"Найдено файлов: {len(files)}. Загружаю модели…", file=sys.stderr)
@@ -72,6 +105,9 @@ def main():
             if n % 25 == 0 and n < len(files):
                 print(f"Обработано {n} из {len(files)}", file=sys.stderr)
 
+    if args.out:
+        write_tsv(args.out, [[t.result.path, format_bpm(t.result.bpm), t.result.camelot, t.result.key_name,
+                              t.result.openkey, t.result.error] for t in tracks])
     if args.csv:
         write_csv(args.csv, tracks, args.range)
         print(f"Результаты сохранены в {args.csv}", file=sys.stderr)

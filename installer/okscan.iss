@@ -32,9 +32,13 @@ Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Ярлык на рабочем столе"; Flags: unchecked
 Name: "sendto"; Description: "Пункт «Отправить → OpenKeyScan» в меню файлов и папок"
+Name: "reaper"; Description: "Скрипты для REAPER (в папку Scripts\OpenKeyScan)"; Check: DirExists(ExpandConstant('{userappdata}\REAPER'))
 
 [Files]
 Source: "..\dist\OpenKeyScan\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Копия скриптов REAPER всегда лежит и в папке программы — на случай портативного REAPER.
+Source: "..\reaper\*.lua"; DestDir: "{app}\reaper-scripts"; Flags: ignoreversion
+Source: "..\reaper\*.lua"; DestDir: "{userappdata}\REAPER\Scripts\OpenKeyScan"; Flags: ignoreversion; Tasks: reaper
 
 [Icons]
 Name: "{autoprograms}\OpenKeyScan (личная сборка)"; Filename: "{app}\OpenKeyScan.exe"
