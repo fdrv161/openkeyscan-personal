@@ -60,6 +60,28 @@ local function split_tabs(line)
   return t
 end
 
+-- Дописывает тональность в конец имени дорожки: «instr» -> «instr [D minor, 7A]».
+-- Старая пометка такого же вида сначала убирается, чтобы при повторном запуске
+-- скобки не копились. Дорожка с несколькими элементами получает тональность первого.
+local function tag_track_names(items, results)
+  local done, count = {}, 0
+  for _, it in ipairs(items) do
+    local r = results[it.file]
+    local track = it.track
+    if r and (r.err or "") == "" and r.camelot ~= "" and track and not done[track]
+       and reaper.ValidatePtr2(0, track, "MediaTrack*") then
+      done[track] = true
+      local _, name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
+      -- «[что угодно, 7A]» в самом конце имени — наша прошлая пометка
+      name = name:gsub("%s*%[[^%[%]]*%d+[AB]%]$", "")
+      local tag = "[" .. r.key .. ", " .. r.camelot .. "]"
+      reaper.GetSetMediaTrackInfo_String(track, "P_NAME", name ~= "" and (name .. " " .. tag) or tag, true)
+      count = count + 1
+    end
+  end
+  return count
+end
+
 local function busy_since()
   local v = tonumber(reaper.GetExtState(TITLE, "busy"))
   -- Метка старше 15 минут — остаток от прерванного запуска, её не считаем.
@@ -93,7 +115,7 @@ function M.run(mode)
     local item = reaper.GetSelectedMediaItem(0, i)
     local file, name = item_file(item)
     if file then
-      items[#items + 1] = { file = file, name = name }
+      items[#items + 1] = { file = file, name = name, track = reaper.GetMediaItem_Track(item) }
       if not seen[file] then
         seen[file] = true
         files[#files + 1] = file
@@ -159,14 +181,24 @@ function M.run(mode)
     local msg = table.concat(parts, ". ")
 
     if mode and mode.set_tempo then
+      -- Темп и имена дорожек — одно действие отмены: Ctrl+Z откатывает всё сразу.
+      reaper.Undo_BeginBlock()
       if not first_bpm then
-        msg = msg .. ". Темп проекта не изменён: BPM не определён."
+        msg = msg .. ". Темп проекта не изменён: BPM не определён"
       elseif reaper.CountTempoTimeSigMarkers(0) > 0 then
-        msg = msg .. ". Темп проекта не изменён: в проекте есть маркеры темпа."
+        msg = msg .. ". Темп проекта не изменён: в проекте есть маркеры темпа"
       else
-        reaper.SetCurrentBPM(0, first_bpm, true)
-        msg = msg .. ". Темп проекта: " .. first_bpm .. "."
+        reaper.SetCurrentBPM(0, first_bpm, false)
+        msg = msg .. ". Темп проекта: " .. first_bpm
       end
+      local renamed = tag_track_names(items, results)
+      if renamed > 0 then
+        msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки."
+                      or (". Тональность записана в имена дорожек: " .. renamed .. "."))
+      else
+        msg = msg .. "."
+      end
+      reaper.Undo_EndBlock("OpenKeyScan: темп проекта и тональность в имени дорожки", -1)
     end
     say(msg)
   end
