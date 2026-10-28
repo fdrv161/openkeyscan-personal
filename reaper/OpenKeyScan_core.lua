@@ -50,7 +50,53 @@ local function item_file(item)
   end
   local file = reaper.GetMediaSourceFileName(src)
   if not file or file == "" then return nil end
-  return file, reaper.GetTakeName(take)
+  return file, reaper.GetTakeName(take), src
+end
+
+-- Диапазоны приведения BPM: нижняя граница (0 — не приводить) и название. Первый — по умолчанию.
+local RANGES = { { 50, "50–100 BPM" }, { 70, "70–140 BPM" }, { 0, "без приведения, полный темп" } }
+-- Ниже этой уверенности сети темп может быть ошибочным (половина, полтора раза) — предупреждаем.
+-- Порог осторожный: верный темп 123.mp3 (88 BPM) имел уверенность 0,45.
+local LOW_CONFIDENCE = 0.3
+
+local function bpm_low()
+  local v = tonumber(reaper.GetExtState(TITLE, "bpm_low"))
+  for _, r in ipairs(RANGES) do
+    if r[1] == v then return v end
+  end
+  return RANGES[1][1]
+end
+
+-- Как fold_bpm в движке: умножаем или делим на 2, пока темп не попадёт в [low, 2*low].
+local function fold_bpm(bpm, low)
+  if low == 0 then return bpm end
+  while bpm < low do bpm = bpm * 2 end
+  while bpm > 2 * low do bpm = bpm / 2 end
+  return bpm
+end
+
+local function format_bpm(bpm)
+  local text = string.format("%.1f", bpm)
+  return (text:gsub("%.0$", ""))
+end
+
+-- Первое непустое значение тега из списка имён (REAPER 6.2 и новее) или nil.
+local function file_tag(src, ids)
+  if not reaper.GetMediaFileMetadata then return nil end
+  for _, id in ipairs(ids) do
+    local ok, value = reaper.GetMediaFileMetadata(src, id)
+    if ok == 1 and value and value:match("%S") then return value:match("^%s*(.-)%s*$") end
+  end
+  return nil
+end
+
+-- BPM и тональность из тегов файла или nil, если чего-то нет.
+local function tags_of(src)
+  local text = (file_tag(src, { "ID3:TBPM", "XMP:dm/tempo", "VORBIS:BPM" }) or ""):gsub(",", ".")
+  local bpm = tonumber(text)
+  local key = file_tag(src, { "ID3:TKEY", "XMP:dm/key", "VORBIS:INITIALKEY", "VORBIS:KEY" })
+  if bpm and bpm > 0 and key then return bpm, key end
+  return nil
 end
 
 local function split_tabs(line)
@@ -213,6 +259,17 @@ end
 
 -- mode.set_tempo = true — после анализа выставить темп проекта по первому элементу.
 -- mode.script_dir — папка скрипта (со слешем на конце), чтобы найти программу рядом.
+-- Действие «Переключить диапазон BPM»: по кругу 50–100, 70–140, без приведения.
+-- Выбор запоминается между запусками REAPER.
+function M.cycle_range()
+  local cur, nxt = bpm_low(), RANGES[1]
+  for i, r in ipairs(RANGES) do
+    if r[1] == cur then nxt = RANGES[i % #RANGES + 1] end
+  end
+  reaper.SetExtState(TITLE, "bpm_low", tostring(nxt[1]), true)
+  say("Диапазон BPM: " .. nxt[2])
+end
+
 function M.run(mode)
   if busy_since() then
     say("Анализ OpenKeyScan уже идёт, дождитесь результата.")
@@ -235,9 +292,9 @@ function M.run(mode)
   local items, files, seen = {}, {}, {}
   for i = 0, count - 1 do
     local item = reaper.GetSelectedMediaItem(0, i)
-    local file, name = item_file(item)
+    local file, name, src = item_file(item)
     if file then
-      items[#items + 1] = { file = file, name = name, item = item, track = reaper.GetMediaItem_Track(item) }
+      items[#items + 1] = { file = file, name = name, src = src, item = item, track = reaper.GetMediaItem_Track(item) }
       if not seen[file] then
         seen[file] = true
         files[#files + 1] = file
@@ -247,6 +304,27 @@ function M.run(mode)
   if #files == 0 then
     say("У выбранных элементов нет аудиофайлов: MIDI и пустые элементы не анализируются.")
     return
+  end
+
+  local low = bpm_low()
+
+  -- Только сообщить: если у всех файлов в тегах есть и BPM, и тональность, движок не нужен.
+  -- Для «задать темп» теги не годятся — в них нет первой сильной доли.
+  if not (mode and mode.set_tempo) then
+    local parts = {}
+    for _, it in ipairs(items) do
+      local bpm, key = tags_of(it.src)
+      if not bpm then
+        parts = nil
+        break
+      end
+      local name = it.name ~= "" and it.name or it.file:match("[^\\/]+$")
+      parts[#parts + 1] = name .. ": " .. format_bpm(fold_bpm(bpm, low)) .. " BPM, " .. key
+    end
+    if parts then
+      say(table.concat(parts, ". ") .. ". Из тегов файла.")
+      return
+    end
   end
 
   local dir = (os.getenv("TEMP") or reaper.GetResourcePath()) .. "\\OpenKeyScan-REAPER"
@@ -264,7 +342,7 @@ function M.run(mode)
   f:close()
 
   -- -2: не ждать завершения и запустить окно консоли свёрнутым.
-  reaper.ExecProcess('"' .. cli .. '" --list "' .. list_path .. '" --out "' .. out_path .. '"', -2)
+  reaper.ExecProcess('"' .. cli .. '" --list "' .. list_path .. '" --out "' .. out_path .. '" --range ' .. low, -2)
   reaper.SetExtState(TITLE, "busy", tostring(os.time()), false)
   say(#files == 1 and "Анализирую." or ("Анализирую файлов: " .. #files .. "."), true)
 
@@ -290,7 +368,8 @@ function M.run(mode)
         return
       end
       results[c[1]] = { bpm = c[2], camelot = c[3], key = c[4], openkey = c[5], err = c[6],
-                        downbeat = tonumber(c[7] or ""), lead = tonumber(c[8] or "") }
+                        downbeat = tonumber(c[7] or ""), lead = tonumber(c[8] or ""),
+                        conf = tonumber(c[9] or "") }
     end
 
     local parts, first_bpm, first_item = {}, nil, nil
@@ -303,6 +382,9 @@ function M.run(mode)
         parts[#parts + 1] = name .. ": ошибка, " .. r.err
       else
         local bpm = r.bpm ~= "" and (r.bpm .. " BPM") or "темп не определён"
+        if r.conf and r.conf < LOW_CONFIDENCE and r.bpm ~= "" then
+          bpm = bpm .. " (темп неуверенный, проверьте на слух)"
+        end
         parts[#parts + 1] = name .. ": " .. bpm .. ", " .. r.camelot .. ", " .. r.key
         if not first_bpm and tonumber(r.bpm) then
           first_bpm, first_item = tonumber(r.bpm), { it = it, r = r }

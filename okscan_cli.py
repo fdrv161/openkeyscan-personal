@@ -58,7 +58,7 @@ def main():
     p.add_argument('--selftest', action='store_true', help="проверить движок на синтетических треках")
     p.add_argument('--list', metavar='FILE', help="список файлов в UTF-8, по одному пути в строке")
     p.add_argument('--out', metavar='FILE',
-                   help="записать результаты в TSV (UTF-8): путь, BPM, Camelot, тональность, Open Key, ошибка, первая сильная доля (с), начало звука в файле (с). "
+                   help="записать результаты в TSV (UTF-8): путь, BPM, Camelot, тональность, Open Key, ошибка, первая сильная доля (с), начало звука в файле (с), уверенность BPM (0–1). "
                         "Файл появляется целиком в самом конце — по нему скрипт понимает, что анализ закончен")
     args = p.parse_args()
     if args.out:
@@ -140,7 +140,9 @@ def run(p, args):
         write_tsv(args.out, [[t.result.path, format_bpm(t.result.bpm), t.result.camelot, t.result.key_name,
                               t.result.openkey, t.result.error,
                               "" if t.result.downbeat is None else f"{t.result.downbeat:.4f}",
-                              "" if t.result.lead is None else f"{t.result.lead:.6f}"] for t in tracks])
+                              "" if t.result.lead is None else f"{t.result.lead:.6f}",
+                              "" if t.result.bpm_confidence is None else f"{t.result.bpm_confidence:.3f}"]
+                             for t in tracks])
     if args.csv:
         write_csv(args.csv, tracks, args.range)
         print(f"Результаты сохранены в {args.csv}", file=sys.stderr)
