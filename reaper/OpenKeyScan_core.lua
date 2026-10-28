@@ -82,6 +82,80 @@ local function tag_track_names(items, results)
   return count
 end
 
+-- Сдвигает элемент item целиком на delta секунд. То, что уезжает левее начала
+-- проекта, подрезается (сдвигается начало звука внутри элемента), а не теряется.
+local function shift_item(item, delta)
+  local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + delta
+  if pos >= 0 then
+    reaper.SetMediaItemInfo_Value(item, "D_POSITION", pos)
+    return false
+  end
+  local cut = -pos
+  local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
+  if cut >= len then
+    -- элемент целиком ушёл бы до начала проекта — оставляем его в нуле как есть
+    reaper.SetMediaItemInfo_Value(item, "D_POSITION", 0)
+    return false
+  end
+  for t = 0, reaper.CountTakes(item) - 1 do
+    local take = reaper.GetTake(item, t)
+    if take then
+      local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+      local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+      reaper.SetMediaItemTakeInfo_Value(take, "D_STARTOFFS", offs + cut * rate)
+    end
+  end
+  reaper.SetMediaItemInfo_Value(item, "D_LENGTH", len - cut)
+  reaper.SetMediaItemInfo_Value(item, "D_POSITION", 0)
+  return true
+end
+
+local function describe_shift(delta)
+  local ms = math.floor(math.abs(delta) * 1000 + 0.5)
+  local amount = ms < 1000 and (ms .. " мс") or (string.format("%.2f", math.abs(delta)) .. " с")
+  return (delta > 0 and "вправо на " or "влево на ") .. amount
+end
+
+-- Ставит первую сильную долю бита (секунды от начала файла) на ближайшую линию
+-- такта и сдвигает на столько же ВСЕ элементы проекта, чтобы ничего не разъехалось.
+-- Возвращает фразу для озвучки.
+local function align_project_to_bar(it, downbeat, bpm)
+  if not downbeat then
+    return "Первую сильную долю найти не удалось, элементы не сдвинуты"
+  end
+  local item = it.item
+  if not reaper.ValidatePtr2(0, item, "MediaItem*") then
+    return "Элемент пропал из проекта, выравнивание пропущено"
+  end
+  local take = reaper.GetActiveTake(item)
+  local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
+  local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
+  local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
+  -- Если начало элемента обрезано дальше первой доли, берём первый такт внутри элемента.
+  if downbeat < offs and bpm then
+    local bar = 4 * 60 / bpm
+    downbeat = downbeat + math.ceil((offs - downbeat) / bar) * bar
+  end
+  local beat_time = pos + (downbeat - offs) / rate
+
+  -- ближайшая линия такта по текущей сетке проекта (темп уже выставлен выше)
+  local _, measure = reaper.TimeMap2_timeToBeats(0, beat_time)
+  local here = reaper.TimeMap2_beatsToTime(0, 0, measure)
+  local nextbar = reaper.TimeMap2_beatsToTime(0, 0, measure + 1)
+  local target = (beat_time - here <= nextbar - beat_time) and here or nextbar
+  local delta = target - beat_time
+  if math.abs(delta) < 0.0005 then
+    return "Бит уже стоит по сетке"
+  end
+
+  local trimmed = false
+  for i = 0, reaper.CountMediaItems(0) - 1 do
+    if shift_item(reaper.GetMediaItem(0, i), delta) then trimmed = true end
+  end
+  return "Все элементы сдвинуты " .. describe_shift(delta) .. ", сильная доля бита на такте " ..
+         (measure + (target == here and 1 or 2)) .. (trimmed and ", начало подрезано" or "")
+end
+
 local function busy_since()
   local v = tonumber(reaper.GetExtState(TITLE, "busy"))
   -- Метка старше 15 минут — остаток от прерванного запуска, её не считаем.
@@ -115,7 +189,7 @@ function M.run(mode)
     local item = reaper.GetSelectedMediaItem(0, i)
     local file, name = item_file(item)
     if file then
-      items[#items + 1] = { file = file, name = name, track = reaper.GetMediaItem_Track(item) }
+      items[#items + 1] = { file = file, name = name, item = item, track = reaper.GetMediaItem_Track(item) }
       if not seen[file] then
         seen[file] = true
         files[#files + 1] = file
@@ -161,10 +235,11 @@ function M.run(mode)
         say("Ошибка OpenKeyScan: " .. (c[6] or "неизвестная ошибка"))
         return
       end
-      results[c[1]] = { bpm = c[2], camelot = c[3], key = c[4], openkey = c[5], err = c[6] }
+      results[c[1]] = { bpm = c[2], camelot = c[3], key = c[4], openkey = c[5], err = c[6],
+                        downbeat = tonumber(c[7] or "") }
     end
 
-    local parts, first_bpm = {}, nil
+    local parts, first_bpm, first_item = {}, nil, nil
     for _, it in ipairs(items) do
       local r = results[it.file]
       local name = it.name ~= "" and it.name or it.file:match("[^\\/]+$")
@@ -175,7 +250,9 @@ function M.run(mode)
       else
         local bpm = r.bpm ~= "" and (r.bpm .. " BPM") or "темп не определён"
         parts[#parts + 1] = name .. ": " .. bpm .. ", " .. r.camelot .. ", " .. r.key
-        first_bpm = first_bpm or tonumber(r.bpm)
+        if not first_bpm and tonumber(r.bpm) then
+          first_bpm, first_item = tonumber(r.bpm), { it = it, r = r }
+        end
       end
     end
     local msg = table.concat(parts, ". ")
@@ -193,12 +270,15 @@ function M.run(mode)
       end
       local renamed = tag_track_names(items, results)
       if renamed > 0 then
-        msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки."
-                      or (". Тональность записана в имена дорожек: " .. renamed .. "."))
-      else
-        msg = msg .. "."
+        msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки"
+                      or (". Тональность записана в имена дорожек: " .. renamed))
       end
-      reaper.Undo_EndBlock("OpenKeyScan: темп проекта и тональность в имени дорожки", -1)
+      if first_item then
+        msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm)
+      end
+      msg = msg .. "."
+      reaper.UpdateArrange()
+      reaper.Undo_EndBlock("OpenKeyScan: темп, тональность и выравнивание по такту", -1)
     end
     say(msg)
   end

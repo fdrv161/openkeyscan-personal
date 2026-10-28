@@ -53,11 +53,11 @@ def synth_track(bpm, seconds=60, root_hz=261.63, minor=False):
 
 
 CASES = [
-    # (BPM, тональность: частота тоники, минор?, ожидаемый Camelot)
-    (128.0, 261.63, False, '8B'),   # C major
-    (174.0, 220.00, True, '8A'),    # A minor
-    (122.5, 392.00, False, '9B'),   # G major
-    (93.0, 329.63, True, '9A'),     # E minor
+    # (BPM, тональность: частота тоники, минор?, ожидаемый Camelot, тишина перед первой долей, с)
+    (128.0, 261.63, False, '8B', 0.337),   # C major
+    (174.0, 220.00, True, '8A', 0.0),      # A minor
+    (122.5, 392.00, False, '9B', 0.0123),  # G major
+    (93.0, 329.63, True, '9A', 1.234),     # E minor
 ]
 
 
@@ -67,9 +67,10 @@ def main():
     print(f"Модели загружены за {time.time() - t0:.1f} с.")
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
-        for bpm, root, minor, camelot in CASES:
+        for bpm, root, minor, camelot, lead in CASES:
             path = Path(tmp) / f"test_{bpm}.wav"
-            sf.write(path, synth_track(bpm, root_hz=root, minor=minor), SR)
+            silence = np.zeros(int(round(lead * SR)), dtype=np.float32)
+            sf.write(path, np.concatenate([silence, synth_track(bpm, root_hz=root, minor=minor)]), SR)
             t0 = time.time()
             # диапазон 88–176 — значение по умолчанию в программе
             r = analyzer.analyze(path, bpm_low=88)
@@ -80,11 +81,13 @@ def main():
                 continue
             bpm_ok = abs(r.bpm - bpm) <= 0.3
             key_ok = r.camelot == camelot
-            status = "OK" if bpm_ok and key_ok else "ПРОВАЛ"
-            print(f"{status}: ожидалось BPM {bpm}, {camelot}; получено BPM {format_bpm(r.bpm)} "
-                  f"(сырое {r.bpm_raw}, уверенность {r.bpm_confidence}), {r.camelot} {r.key_name}; "
-                  f"{took:.1f} с.")
-            failures += not (bpm_ok and key_ok)
+            # первая доля нужна для выравнивания по сетке в REAPER: допуск 2 мс
+            beat_ok = r.downbeat is not None and abs(r.downbeat - lead) <= 0.002
+            ok = bpm_ok and key_ok and beat_ok
+            print(f"{'OK' if ok else 'ПРОВАЛ'}: ожидалось BPM {bpm}, {camelot}, первая доля {lead} с; "
+                  f"получено BPM {format_bpm(r.bpm)} (сырое {r.bpm_raw}, уверенность {r.bpm_confidence}), "
+                  f"{r.camelot} {r.key_name}, первая доля {r.downbeat} с; {took:.1f} с.")
+            failures += not ok
     print("Самопроверка пройдена." if not failures else f"Провалено проверок: {failures}.")
     return 1 if failures else 0
 

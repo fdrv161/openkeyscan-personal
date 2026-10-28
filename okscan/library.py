@@ -38,11 +38,12 @@ def write_csv(path, tracks, bpm_low):
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, delimiter=';')
         w.writerow(["Файл", "Папка", "BPM", "BPM без приведения", "Уверенность BPM",
-                    "Camelot", "Open Key", "Тональность", "Ошибка"])
+                    "Camelot", "Open Key", "Тональность", "Первая сильная доля, с", "Ошибка"])
         for t in tracks:
             r = t.result or Result(path=t.path)
             w.writerow([Path(t.path).name, str(Path(t.path).parent),
                         format_bpm(fold_bpm(r.bpm_raw, bpm_low)),
                         "" if r.bpm_raw is None else f"{r.bpm_raw:.2f}",
                         "" if r.bpm_confidence is None else f"{r.bpm_confidence:.2f}",
-                        r.camelot, r.openkey, r.key_name, r.error or ("" if t.result else t.status)])
+                        r.camelot, r.openkey, r.key_name,
+                        "" if r.downbeat is None else f"{r.downbeat:.4f}", r.error or ("" if t.result else t.status)])
