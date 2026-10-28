@@ -76,4 +76,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release create "$GITHUB_REF_NAME" dist/OpenKeyScan-REAPER-*.zip --title "$GITHUB_REF_NAME" --notes "Скрипты OpenKeyScan для REAPER под Windows x64: тональность и BPM выбранных элементов. Распакуйте архив в папку Scripts REAPER, подробности в README.md внутри."
+        # Блок «|», а не строка в одну линию: двоеточие с пробелом в тексте YAML принял бы за ключ.
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/OpenKeyScan-REAPER-*.zip --title "$GITHUB_REF_NAME" --notes "Скрипты OpenKeyScan для REAPER под Windows x64: тональность и BPM выбранных элементов. Распакуйте архив в папку Scripts REAPER, подробности в README.md внутри."
