@@ -20,11 +20,21 @@ local function say(msg)
   end
 end
 
-local function find_cli()
-  local custom = reaper.GetExtState(TITLE, "cli_path")
-  if custom ~= "" and reaper.file_exists(custom) then return custom end
+-- Где искать okscan-cli.exe, по порядку:
+-- 1) путь, сохранённый в ExtState (OpenKeyScan / cli_path);
+-- 2) установленная программа в профиле пользователя;
+-- 3) рядом со скриптом: копия скриптов в папке программы (reaper-scripts\..)
+--    или папка проекта со свежей сборкой (reaper\..\dist\OpenKeyScan).
+local function find_cli(script_dir)
   local default = (os.getenv("LOCALAPPDATA") or "") .. "\\Programs\\OpenKeyScan-Personal\\okscan-cli.exe"
-  if reaper.file_exists(default) then return default end
+  local candidates = { reaper.GetExtState(TITLE, "cli_path"), default }
+  if script_dir then
+    candidates[#candidates + 1] = script_dir .. "..\\okscan-cli.exe"
+    candidates[#candidates + 1] = script_dir .. "..\\dist\\OpenKeyScan\\okscan-cli.exe"
+  end
+  for _, path in ipairs(candidates) do
+    if path ~= "" and reaper.file_exists(path) then return path end
+  end
   return nil, default
 end
 
@@ -58,13 +68,14 @@ local function busy_since()
 end
 
 -- mode.set_tempo = true — после анализа выставить темп проекта по первому элементу.
+-- mode.script_dir — папка скрипта (со слешем на конце), чтобы найти программу рядом.
 function M.run(mode)
   if busy_since() then
     say("Анализ OpenKeyScan уже идёт, дождитесь результата.")
     return
   end
 
-  local cli, expected = find_cli()
+  local cli, expected = find_cli(mode and mode.script_dir)
   if not cli then
     say("Не найдена программа OpenKeyScan. Установите личную сборку OpenKeyScan, " ..
         "ожидаемый путь: " .. expected)
