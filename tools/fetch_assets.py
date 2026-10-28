@@ -1,16 +1,13 @@
 """
 Скачивает файлы, которые не хранятся в git, и проверяет их SHA-256:
-- веса модели BPM DeepRhythm 0.7 (AGPL-3.0, github.com/bleugreen/deeprhythm);
-- библиотеку NVDA Controller Client (LGPL-2.1) для озвучки сообщений программы.
+веса модели BPM DeepRhythm 0.7 (AGPL-3.0, github.com/bleugreen/deeprhythm).
 
 Запуск: python tools/fetch_assets.py
 Код выхода 0 — всё скачано и проверено, 1 — ошибка (текст в stderr).
 """
 import hashlib
-import io
 import sys
 import urllib.request
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -21,9 +18,6 @@ DEEPRHYTHM_URL = ("https://raw.githubusercontent.com/bleugreen/deeprhythm/"
                   "929dfc3eb8f7c2f0355719addc5a7c3216396ad6/deeprhythm-0.7.pth")
 # Хэш опубликован автором в docs/benchmarks.md.
 DEEPRHYTHM_SHA256 = "c7cc8cc0425929cd2bf695474d7ec1fd63ed0d0a4a68f361d4e4b57bd9b3d9c4"
-
-NVDA_CC_URL = "https://download.nvaccess.org/releases/2026.2/nvda_2026.2_controllerClient.zip"
-NVDA_CC_SHA256 = "510736f021aefa33378076fa342a4524b586bc1c6b096db9479af42b28aac649"
 
 
 def download(url):
@@ -49,18 +43,6 @@ def main():
         check(data, DEEPRHYTHM_SHA256, "deeprhythm-0.7.pth")
         weights.write_bytes(data)
         print("Веса DeepRhythm сохранены.")
-
-    dll = ASSETS / "nvdaControllerClient.dll"
-    if dll.exists():
-        print("NVDA Controller Client уже на месте.")
-    else:
-        print("Скачиваю NVDA Controller Client...")
-        data = download(NVDA_CC_URL)
-        check(data, NVDA_CC_SHA256, "nvda controllerClient.zip")
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            dll.write_bytes(z.read("x64/nvdaControllerClient.dll"))
-            (ASSETS / "nvdaControllerClient-license.txt").write_bytes(z.read("license.txt"))
-        print("NVDA Controller Client сохранён.")
     return 0
 
 

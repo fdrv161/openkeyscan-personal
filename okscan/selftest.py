@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
-from okscan.analyzer import Analyzer, format_bpm
+from okscan.analyzer import Analyzer
+from okscan.library import format_bpm
 
 SR = 44100
 

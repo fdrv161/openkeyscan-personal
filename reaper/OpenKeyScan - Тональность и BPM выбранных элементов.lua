@@ -1,4 +1,4 @@
--- OpenKeyScan: озвучить тональность и BPM выбранных элементов (через OSARA).
--- Нужны: личная сборка OpenKeyScan и файл OpenKeyScan_core.lua в той же папке.
+-- OpenKeyScan: сообщить тональность и BPM выбранных элементов.
+-- Нужны файл OpenKeyScan_core.lua и папка engine рядом с этим скриптом.
 local dir = ({ reaper.get_action_context() })[2]:match("^(.*[\\/])")
 dofile(dir .. "OpenKeyScan_core.lua").run({ set_tempo = false, script_dir = dir })

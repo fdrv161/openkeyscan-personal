@@ -11,7 +11,6 @@ import os
 import sys
 import threading
 import warnings
-from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -22,12 +21,10 @@ import av
 from model import KeyNet
 from okscan.deeprhythm import features as dr_features
 from okscan.deeprhythm.model import DeepRhythmModel, class_to_bpm
+from okscan.library import Result, SUPPORTED_FORMATS, fold_bpm
 
 # Безвредное предупреждение torch про padding='same' в DeepRhythm — только засоряет вывод.
 warnings.filterwarnings('ignore', message="Using padding='same'", category=UserWarning)
-
-SUPPORTED_FORMATS = {'.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a', '.aac',
-                     '.aiff', '.aif', '.au', '.opus', '.wma', '.alac'}
 
 KEY_SR = 44100
 
@@ -46,24 +43,19 @@ BPM_MAX_CLIPS = 64
 # Для уточнения BPM хватает 10 минут из середины трека.
 REFINE_MAX_SECONDS = 600
 
+# Огибающие атак: шаг 128 отсчётов (~5,8 мс при 22 050 Гц), окно 2048.
+ONSET_HOP = 128
+ONSET_NFFT = 2048
+# Тишина перед треком для beat_grid — ровно 86 кадров (~0,5 с). Кратность шагу важна:
+# тогда кадры спектра с тишиной и без совпадают со сдвигом на 86, и одного спектра
+# хватает и для refine_bpm, и для beat_grid (раньше считалось три — это было самое долгое).
+PAD_FRAMES = 86
+
 
 def resource_path(relative):
     """Путь к файлу рядом с кодом или внутри сборки PyInstaller."""
     base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent))
     return base / relative
-
-
-@dataclass
-class Result:
-    path: str
-    camelot: str = ''
-    openkey: str = ''
-    key_name: str = ''
-    bpm: float | None = None        # после приведения к диапазону
-    bpm_raw: float | None = None    # как определил алгоритм
-    bpm_confidence: float | None = None
-    downbeat: float | None = None   # первая сильная доля, секунды от начала файла
-    error: str = ''
 
 
 def camelot_of(class_id):
@@ -73,27 +65,6 @@ def camelot_of(class_id):
 def openkey_of(camelot):
     num, mode = int(camelot[:-1]), camelot[-1]
     return f"{(num - 8) % 12 + 1}{'m' if mode == 'A' else 'd'}"
-
-
-def fold_bpm(bpm, low):
-    """Приводит темп к диапазону [low, 2*low] умножением/делением на 2.
-    low = 0 — не менять. Лечит самую частую ошибку: темп «вдвое» больше или меньше.
-    Обе границы входят: при low=50 темп 100 остаётся 100, а 133 становится 66,5."""
-    if bpm is None or not low:
-        return bpm
-    while bpm < low:
-        bpm *= 2
-    while bpm > 2 * low:
-        bpm /= 2
-    return bpm
-
-
-def format_bpm(bpm):
-    """128.0 -> «128», 127.46 -> «127.5». Десятые — потолок разумной точности."""
-    if bpm is None:
-        return ''
-    text = f"{bpm:.1f}"
-    return text[:-2] if text.endswith('.0') else text
 
 
 def decode_audio(path):
@@ -129,21 +100,41 @@ def key_spectrogram(y44):
     return torch.from_numpy(np.ascontiguousarray(spec, dtype=np.float32))[None, None]
 
 
-def refine_bpm(y22, coarse):
+def _onset_env(power, **mel):
+    """Огибающая атак по готовому спектру мощности — то же, что
+    librosa.onset.onset_strength(y=...), но без повторного STFT."""
+    sr = dr_features.SR
+    S = librosa.feature.melspectrogram(S=power, sr=sr, n_fft=ONSET_NFFT, **mel)
+    return librosa.onset.onset_strength(S=librosa.power_to_db(S), sr=sr, hop_length=ONSET_HOP)
+
+
+def onset_envelopes(y22):
+    """Огибающие атак по одному спектру: (полная без тишины, полная с тишиной спереди,
+    басовая ниже 250 Гц с тишиной). Тишину спереди добавляет beat_grid, см. PAD_FRAMES."""
+    y = np.concatenate([np.zeros(PAD_FRAMES * ONSET_HOP, dtype=y22.dtype), y22])
+    power = np.abs(librosa.stft(y, n_fft=ONSET_NFFT, hop_length=ONSET_HOP)) ** 2
+    return (_onset_env(power[:, PAD_FRAMES:]), _onset_env(power),
+            _onset_env(power, fmax=250, n_mels=16))
+
+
+def refine_bpm(y22, coarse, env=None):
     """Уточняет целый BPM от DeepRhythm до дробного.
 
     Сеть выдаёт класс шириной 1 BPM (нижнюю границу), поэтому ищем лучший темп
     в окне [coarse-1, coarse+2] по «гребёнке» автокорреляции огибающей атак:
     сумма автокорреляции на задержках 1..16 долей. Чем больше долей, тем точнее —
     ошибка в 0,1% на 16 долях уже заметно сдвигает пик.
+    env — готовая огибающая всего трека из onset_envelopes (необязательно).
     """
     sr = dr_features.SR
-    hop = 128
+    hop = ONSET_HOP
     fps = sr / hop
     if len(y22) > REFINE_MAX_SECONDS * sr:
         start = (len(y22) - REFINE_MAX_SECONDS * sr) // 2
         y22 = y22[start:start + REFINE_MAX_SECONDS * sr]
-    env = librosa.onset.onset_strength(y=y22, sr=sr, hop_length=hop)
+        env = None   # готовая огибающая — по всему треку, а нужна середина
+    if env is None:
+        env = librosa.onset.onset_strength(y=y22, sr=sr, hop_length=hop)
     env = env - env.mean()
     candidates = np.arange(max(coarse - 1.0, 20.0), coarse + 2.0, 0.01)
     beats = np.arange(1, 17)
@@ -186,8 +177,9 @@ def _attack_time(y, t, sr, reach_s=0.045):
     return s0 + (int(above[0]) if len(above) else 0), float(diff[rise])
 
 
-def beat_grid(y22, bpm):
+def beat_grid(y22, bpm, env=None, low=None):
     """Сетка долей трека: (первая сильная доля в секундах, уточнённый BPM) или (None, None).
+    env, low — огибающие трека с тишиной спереди из onset_envelopes (необязательно).
 
     1) Грубо: сдвиг сетки ищем по атакам ниже 250 Гц (бочка, 808) — хэты на слабых
        долях иначе утягивают сетку на полдоли. Начало музыки — первая доля, где
@@ -199,15 +191,15 @@ def beat_grid(y22, bpm):
     Если ударов по прямой мало (живая игра, сложный ритм) — берём начало атаки
     первой доли как есть, а темп не трогаем.
     """
-    sr, hop = dr_features.SR, 128
+    sr, hop = dr_features.SR, ONSET_HOP
     if not bpm:
         return None, None
     # Тишина спереди: иначе удар в самой первой миллисекунде файла не даёт атаки
     # (огибающей не с чем сравнить) и первая доля пропускается. В конце её вычитаем.
-    pad = int(0.5 * sr)
+    pad = PAD_FRAMES * hop
     y = np.concatenate([np.zeros(pad, dtype=y22.dtype), y22])
-    low = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop, fmax=250, n_mels=16)
-    env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    if env is None or low is None:
+        _, env, low = onset_envelopes(y22)
     period = 60.0 * sr / hop / bpm
     n = int((len(env) - 1) // period)
     if n < 8:
@@ -279,7 +271,8 @@ class Analyzer:
         # Делим ядра между рабочими потоками, чтобы они не мешали друг другу.
         torch.set_num_threads(max(1, (os.cpu_count() or 2) // max(1, workers)))
         self._local = threading.local()
-        self._warmup()
+        if workers > 1:
+            self._warmup()
 
     def _models(self):
         loc = self._local
@@ -297,6 +290,7 @@ class Analyzer:
         # Первый вызов librosa.cqt/onset компилирует код numba. Если это случится
         # одновременно в нескольких потоках, оригинальный сервер зависал —
         # поэтому прогреваем всё один раз здесь, до запуска рабочих потоков.
+        # С одним потоком прогрев не нужен: первый трек и так сделает то же самое.
         t = np.arange(KEY_SR * 10) / KEY_SR
         y = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
         self._analyze_waveform(y)
@@ -331,9 +325,10 @@ class Analyzer:
                 hcqm = dr_features.compute_hcqm(clips.to(self.device), *kernels)
                 probs = torch.softmax(bpm_model(hcqm.to(self.device)), dim=1).mean(dim=0)
                 p, cls = torch.max(probs, 0)
-                bpm = round(refine_bpm(y22, class_to_bpm(int(cls))), 2)
+                env, env_pad, low_pad = onset_envelopes(y22)
+                bpm = round(refine_bpm(y22, class_to_bpm(int(cls)), env), 2)
                 conf = round(float(p), 3)
-                downbeat, fitted = beat_grid(y22, bpm)
+                downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad)
                 if fitted:
                     bpm = round(fitted, 2)   # темп по ударам точнее оценки сети
         return camelot_of(class_id), KEY_NAMES[class_id], bpm, conf, downbeat

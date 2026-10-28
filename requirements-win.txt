@@ -7,5 +7,4 @@ librosa==0.11.0
 av==19.0.1
 # nnAudio нужна для BPM (DeepRhythm); версия та же, что у DeepRhythm.
 nnAudio==0.3.3
-wxPython==4.3.2
 soundfile

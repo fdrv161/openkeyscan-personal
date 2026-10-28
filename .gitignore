@@ -205,3 +205,6 @@ checkpoints/custom
 # Личная сборка под Windows
 .venv/
 assets/
+
+# Кэш результатов и numba у консольной версии при запуске из исходников
+cache/

@@ -1,35 +1,34 @@
 -- Общий код скриптов OpenKeyScan для REAPER. Это не отдельное действие:
 -- его подключают файлы «OpenKeyScan - ….lua», загружать в список действий не нужно.
 --
--- Что делает: берёт исходные файлы выбранных элементов, отдаёт их консольной
--- OpenKeyScan (okscan-cli.exe) и озвучивает результат через OSARA.
+-- Что делает: берёт исходные файлы выбранных элементов, отдаёт их движку анализа
+-- (engine\okscan-cli.exe рядом со скриптами) и сообщает результат.
 -- Анализ идёт в отдельном процессе, REAPER при этом не замирает.
 
 local M = {}
 
 local TITLE = "OpenKeyScan"
--- Первый запуск после установки грузит модели дольше, поэтому запас щедрый.
+-- Первый запуск грузит модели дольше, поэтому запас щедрый.
 local TIMEOUT_BASE, TIMEOUT_PER_FILE = 90, 30
 
-local function say(msg)
+-- quiet = true — промежуточное сообщение («Анализирую»): без OSARA его не показываем,
+-- чтобы не открывать окно на каждом шаге. Итоги и ошибки показываются всегда.
+local function say(msg, quiet)
   if reaper.osara_outputMessage then
     reaper.osara_outputMessage(msg)
-  else
-    -- Без OSARA сообщаем окном: его прочитает любой скринридер.
+  elseif not quiet then
     reaper.MB(msg, TITLE, 0)
   end
 end
 
 -- Где искать okscan-cli.exe, по порядку:
 -- 1) путь, сохранённый в ExtState (OpenKeyScan / cli_path);
--- 2) установленная программа в профиле пользователя;
--- 3) рядом со скриптом: копия скриптов в папке программы (reaper-scripts\..)
---    или папка проекта со свежей сборкой (reaper\..\dist\OpenKeyScan).
+-- 2) папка engine рядом со скриптом — так лежит распакованный архив;
+-- 3) свежая сборка в папке исходников (reaper\..\dist\OpenKeyScan).
 local function find_cli(script_dir)
-  local default = (os.getenv("LOCALAPPDATA") or "") .. "\\Programs\\OpenKeyScan-Personal\\okscan-cli.exe"
+  local default = (script_dir or "") .. "engine\\okscan-cli.exe"
   local candidates = { reaper.GetExtState(TITLE, "cli_path"), default }
   if script_dir then
-    candidates[#candidates + 1] = script_dir .. "..\\okscan-cli.exe"
     candidates[#candidates + 1] = script_dir .. "..\\dist\\OpenKeyScan\\okscan-cli.exe"
   end
   for _, path in ipairs(candidates) do
@@ -118,7 +117,7 @@ end
 
 -- Ставит первую сильную долю бита (секунды от начала файла) на ближайшую линию
 -- такта и сдвигает на столько же ВСЕ элементы проекта, чтобы ничего не разъехалось.
--- Возвращает фразу для озвучки.
+-- Возвращает фразу для итогового сообщения.
 local function align_project_to_bar(it, downbeat, bpm)
   if not downbeat then
     return "Первую сильную долю найти не удалось, элементы не сдвинуты"
@@ -128,6 +127,9 @@ local function align_project_to_bar(it, downbeat, bpm)
     return "Элемент пропал из проекта, выравнивание пропущено"
   end
   local take = reaper.GetActiveTake(item)
+  if not take then
+    return "У элемента нет активного дубля, выравнивание пропущено"
+  end
   local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
   local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
   local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
@@ -173,8 +175,8 @@ function M.run(mode)
 
   local cli, expected = find_cli(mode and mode.script_dir)
   if not cli then
-    say("Не найдена программа OpenKeyScan. Установите личную сборку OpenKeyScan, " ..
-        "ожидаемый путь: " .. expected)
+    say("Не найден движок анализа OpenKeyScan. Распакуйте архив целиком, чтобы папка engine " ..
+        "лежала рядом со скриптами. Ожидаемый путь: " .. expected)
     return
   end
 
@@ -218,15 +220,21 @@ function M.run(mode)
   -- -2: не ждать завершения и запустить окно консоли свёрнутым.
   reaper.ExecProcess('"' .. cli .. '" --list "' .. list_path .. '" --out "' .. out_path .. '"', -2)
   reaper.SetExtState(TITLE, "busy", tostring(os.time()), false)
-  say(#files == 1 and "Анализирую." or ("Анализирую файлов: " .. #files .. "."))
+  say(#files == 1 and "Анализирую." or ("Анализирую файлов: " .. #files .. "."), true)
 
   local started = reaper.time_precise()
   local timeout = TIMEOUT_BASE + TIMEOUT_PER_FILE * #files
 
-  local function finish(text)
+  local function cleanup()
     reaper.DeleteExtState(TITLE, "busy", false)
     os.remove(list_path)
     os.remove(out_path)
+  end
+  -- Если скрипт остановят до результата (или закроют REAPER), признак «занято» всё равно снимется.
+  reaper.atexit(cleanup)
+
+  local function finish(text)
+    cleanup()
 
     local results = {}
     for line in text:gmatch("[^\n]+") do
@@ -258,27 +266,36 @@ function M.run(mode)
     local msg = table.concat(parts, ". ")
 
     if mode and mode.set_tempo then
-      -- Темп и имена дорожек — одно действие отмены: Ctrl+Z откатывает всё сразу.
+      -- Темп, имена дорожек и сдвиг — одно действие отмены: Ctrl+Z откатывает всё сразу.
+      -- PreventUIRefresh: экран не перерисовывается после каждого сдвинутого элемента.
+      -- pcall: при сбое посередине блок отмены и перерисовка всё равно закрываются.
+      reaper.PreventUIRefresh(1)
       reaper.Undo_BeginBlock()
-      if not first_bpm then
-        msg = msg .. ". Темп проекта не изменён: BPM не определён"
-      elseif reaper.CountTempoTimeSigMarkers(0) > 0 then
-        msg = msg .. ". Темп проекта не изменён: в проекте есть маркеры темпа"
-      else
-        reaper.SetCurrentBPM(0, first_bpm, false)
-        msg = msg .. ". Темп проекта: " .. first_bpm
-      end
-      local renamed = tag_track_names(items, results)
-      if renamed > 0 then
-        msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки"
-                      or (". Тональность записана в имена дорожек: " .. renamed))
-      end
-      if first_item then
-        msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm)
+      local ok, err = pcall(function()
+        if not first_bpm then
+          msg = msg .. ". Темп проекта не изменён: BPM не определён"
+        elseif reaper.CountTempoTimeSigMarkers(0) > 0 then
+          msg = msg .. ". Темп проекта не изменён: в проекте есть маркеры темпа"
+        else
+          reaper.SetCurrentBPM(0, first_bpm, false)
+          msg = msg .. ". Темп проекта: " .. first_bpm
+        end
+        local renamed = tag_track_names(items, results)
+        if renamed > 0 then
+          msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки"
+                        or (". Тональность записана в имена дорожек: " .. renamed))
+        end
+        if first_item then
+          msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm)
+        end
+      end)
+      reaper.Undo_EndBlock("OpenKeyScan: темп, тональность и выравнивание по такту", -1)
+      reaper.PreventUIRefresh(-1)
+      reaper.UpdateArrange()
+      if not ok then
+        msg = msg .. ". Не удалось изменить проект: " .. tostring(err)
       end
       msg = msg .. "."
-      reaper.UpdateArrange()
-      reaper.Undo_EndBlock("OpenKeyScan: темп, тональность и выравнивание по такту", -1)
     end
     say(msg)
   end
@@ -292,8 +309,7 @@ function M.run(mode)
       return
     end
     if reaper.time_precise() - started > timeout then
-      reaper.DeleteExtState(TITLE, "busy", false)
-      os.remove(list_path)
+      cleanup()
       say("OpenKeyScan не ответила за " .. math.floor(timeout) .. " секунд. " ..
           "Проверьте, что программа запускается, и попробуйте ещё раз.")
       return
