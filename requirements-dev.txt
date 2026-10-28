@@ -1,0 +1,9 @@
+# Только для разработчика: перевод сетей в ONNX (tools/export_onnx.py) и сверка
+# обработки звука с оригиналами (tools/check_parity.py). В сборку не попадает.
+-r requirements-win.lock.txt
+torch==2.14.1
+onnx==1.23.2
+# На CQT librosa 0.11.0 обучалась модель тональности — с ней и сверяемся.
+librosa==0.11.0
+# nnAudio — признаки DeepRhythm в оригинале; версия та же, что у DeepRhythm.
+nnAudio==0.3.3

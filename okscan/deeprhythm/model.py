@@ -1,12 +1,9 @@
 # Архитектура сети DeepRhythm 0.7 без изменений (AGPL-3.0, см. __init__.py).
+# Нужна только tools/export_onnx.py: движок запускает уже готовый models/deeprhythm.onnx.
 import torch.nn as nn
 import torch.nn.functional as F
 
-# Классы сети: 256 значений темпа от 30 до 286 BPM с шагом 1.
-MIN_BPM = 30
-MAX_BPM = 286
-NUM_CLASSES = 256
-CLASS_WIDTH = (MAX_BPM - MIN_BPM) / NUM_CLASSES
+from okscan.deeprhythm.classes import NUM_CLASSES
 
 
 class DeepRhythmModel(nn.Module):
@@ -38,7 +35,3 @@ class DeepRhythmModel(nn.Module):
         x = self.dropout(self.elu(self.fc1(x)))
         return self.fc2(x)
 
-
-def class_to_bpm(class_index):
-    """Как в оригинале: возвращает нижнюю границу класса (то есть целое число BPM)."""
-    return MIN_BPM + CLASS_WIDTH * class_index

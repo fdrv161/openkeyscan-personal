@@ -8,10 +8,10 @@
 import sys
 import tempfile
 import time
+import wave
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 
 from okscan.analyzer import Analyzer
 from okscan.library import format_bpm
@@ -53,6 +53,15 @@ def synth_track(bpm, seconds=60, root_hz=261.63, minor=False):
     return (y / np.abs(y).max() * 0.9).astype(np.float32)
 
 
+def write_wav(path, y):
+    """16-битный моно WAV средствами Python — без лишних библиотек в сборке."""
+    with wave.open(str(path), 'wb') as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(SR)
+        w.writeframes((np.clip(y, -1, 1) * 32767).round().astype('<i2').tobytes())
+
+
 CASES = [
     # (BPM, тональность: частота тоники, минор?, ожидаемый Camelot, тишина перед первой долей, с)
     (128.0, 261.63, False, '8B', 0.337),   # C major
@@ -71,7 +80,7 @@ def main():
         for bpm, root, minor, camelot, lead in CASES:
             path = Path(tmp) / f"test_{bpm}.wav"
             silence = np.zeros(int(round(lead * SR)), dtype=np.float32)
-            sf.write(path, np.concatenate([silence, synth_track(bpm, root_hz=root, minor=minor)]), SR)
+            write_wav(path, np.concatenate([silence, synth_track(bpm, root_hz=root, minor=minor)]))
             t0 = time.time()
             # диапазон 88–176 — значение по умолчанию в программе
             r = analyzer.analyze(path, bpm_low=88)

@@ -4,27 +4,23 @@
 Тональность — модель OpenKeyScan (openkeyscan3.pt), предобработка как в
 openkeyscan_analyzer_server.py, чтобы результаты совпадали с оригиналом.
 Темп — DeepRhythm 0.7 (грубая оценка) + уточнение по автокорреляции атак (дробный BPM).
+Обе сети переведены в ONNX (tools/export_onnx.py) и запускаются через onnxruntime,
+обработка звука — на numpy (okscan/dsp.py): без torch, librosa и numba запуск в разы быстрее.
 
 Файлы открываются только на чтение — никаких тегов и записи в аудио.
 """
 import os
 import sys
-import threading
-import warnings
 from pathlib import Path
 
-import numpy as np
-import torch
-import librosa
 import av
+import numpy as np
+import onnxruntime as ort
 
-from model import KeyNet
+from okscan import dsp
 from okscan.deeprhythm import features as dr_features
-from okscan.deeprhythm.model import DeepRhythmModel, class_to_bpm
+from okscan.deeprhythm.classes import class_to_bpm
 from okscan.library import Result, SUPPORTED_FORMATS, fold_bpm
-
-# Безвредное предупреждение torch про padding='same' в DeepRhythm — только засоряет вывод.
-warnings.filterwarnings('ignore', message="Using padding='same'", category=UserWarning)
 
 KEY_SR = 44100
 
@@ -119,24 +115,23 @@ def decode_audio(path):
 
 def key_spectrogram(y44):
     """Лог-CQT с параметрами оригинала: 105 бинов, 24 на октаву, от 65 Гц, шаг 0,2 с."""
-    cqt = librosa.cqt(y44, sr=KEY_SR, hop_length=8820, n_bins=105, bins_per_octave=24, fmin=65)
+    cqt = dsp.cqt(y44, sr=KEY_SR, hop=8820, fmin=65, n_bins=105, bpo=24)
     spec = np.log1p(np.abs(cqt))[:, :-2]   # как в оригинале: два последних кадра отбрасываются
-    return torch.from_numpy(np.ascontiguousarray(spec, dtype=np.float32))[None, None]
+    return np.ascontiguousarray(spec, dtype=np.float32)[None, None]
 
 
 def _onset_env(power, **mel):
     """Огибающая атак по готовому спектру мощности — то же, что
     librosa.onset.onset_strength(y=...), но без повторного STFT."""
-    sr = dr_features.SR
-    S = librosa.feature.melspectrogram(S=power, sr=sr, n_fft=ONSET_NFFT, **mel)
-    return librosa.onset.onset_strength(S=librosa.power_to_db(S), sr=sr, hop_length=ONSET_HOP)
+    S = dsp.mel_filters(dr_features.SR, ONSET_NFFT, **mel) @ power
+    return dsp.onset_strength(dsp.power_to_db(S), n_fft=ONSET_NFFT, hop=ONSET_HOP)
 
 
 def onset_envelopes(y22):
     """Огибающие атак по одному спектру: (полная без тишины, полная с тишиной спереди,
     басовая ниже 250 Гц с тишиной). Тишину спереди добавляет beat_grid, см. PAD_FRAMES."""
     y = np.concatenate([np.zeros(PAD_FRAMES * ONSET_HOP, dtype=y22.dtype), y22])
-    power = np.abs(librosa.stft(y, n_fft=ONSET_NFFT, hop_length=ONSET_HOP)) ** 2
+    power = dsp.power_spectrum(y, ONSET_NFFT, ONSET_HOP)
     return (_onset_env(power[:, PAD_FRAMES:]), _onset_env(power),
             _onset_env(power, fmax=250, n_mels=16))
 
@@ -158,7 +153,7 @@ def refine_bpm(y22, coarse, env=None):
         y22 = y22[start:start + REFINE_MAX_SECONDS * sr]
         env = None   # готовая огибающая — по всему треку, а нужна середина
     if env is None:
-        env = librosa.onset.onset_strength(y=y22, sr=sr, hop_length=hop)
+        env = _onset_env(dsp.power_spectrum(y22, ONSET_NFFT, hop))
     env = env - env.mean()
     candidates = np.arange(max(coarse - 1.0, 20.0), coarse + 2.0, 0.01)
     beats = np.arange(1, 17)
@@ -166,7 +161,7 @@ def refine_bpm(y22, coarse, env=None):
     max_lag = int(np.ceil(lags.max())) + 2
     if max_lag >= len(env):
         return coarse
-    ac = librosa.autocorrelate(env, max_size=max_lag + 1)
+    ac = dsp.autocorrelate(env, max_size=max_lag + 1)
     scores = np.interp(lags, np.arange(len(ac)), ac).sum(axis=1)
     return float(candidates[np.argmax(scores)])
 
@@ -182,7 +177,7 @@ def _attack_time(y, t, sr, reach_s=0.045):
     reach = int(reach_s * sr)
     base = max(0, t - reach - 64)
     seg_y = y[base:t + reach + 64]
-    rms = librosa.feature.rms(y=seg_y, frame_length=128, hop_length=fine, center=False)[0]
+    rms = dsp.rms(seg_y, frame_length=128, hop=fine)
     if len(rms) < 3:
         return None, 0.0
     diff = np.diff(rms)
@@ -283,41 +278,20 @@ def beat_grid(y22, bpm, env=None, low=None):
 
 
 class Analyzer:
-    """Потокобезопасный анализатор: у каждого рабочего потока свои копии моделей."""
+    """Анализатор. Сессии onnxruntime потокобезопасны, поэтому одни на все рабочие потоки."""
 
-    def __init__(self, workers=1, device='cpu'):
-        self.device = torch.device(device)
-        self.key_model_path = resource_path('checkpoints/openkeyscan3.pt')
-        self.bpm_model_path = resource_path('assets/deeprhythm-0.7.pth')
-        for p in (self.key_model_path, self.bpm_model_path):
+    def __init__(self, workers=1):
+        paths = [resource_path('models/keynet.onnx'), resource_path('models/deeprhythm.onnx')]
+        for p in paths:
             if not p.exists():
                 raise FileNotFoundError(f"Не найден файл модели: {p}")
+        opts = ort.SessionOptions()
         # Делим ядра между рабочими потоками, чтобы они не мешали друг другу.
-        torch.set_num_threads(max(1, (os.cpu_count() or 2) // max(1, workers)))
-        self._local = threading.local()
-        if workers > 1:
-            self._warmup()
-
-    def _models(self):
-        loc = self._local
-        if not hasattr(loc, 'key_model'):
-            km = KeyNet(num_classes=24, in_channels=1, Nf=64, p=0.3)
-            km.load_state_dict(torch.load(self.key_model_path, map_location=self.device, weights_only=True))
-            loc.key_model = km.to(self.device).eval()
-            bm = DeepRhythmModel()
-            bm.load_state_dict(torch.load(self.bpm_model_path, map_location=self.device, weights_only=True))
-            loc.bpm_model = bm.to(self.device).eval()
-            loc.kernels = dr_features.make_kernels(self.device)
-        return loc.key_model, loc.bpm_model, loc.kernels
-
-    def _warmup(self):
-        # Первый вызов librosa.cqt/onset компилирует код numba. Если это случится
-        # одновременно в нескольких потоках, оригинальный сервер зависал —
-        # поэтому прогреваем всё один раз здесь, до запуска рабочих потоков.
-        # С одним потоком прогрев не нужен: первый трек и так сделает то же самое.
-        t = np.arange(KEY_SR * 10) / KEY_SR
-        y = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
-        self._analyze_waveform(y)
+        opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // max(1, workers))
+        opts.log_severity_level = 3   # только ошибки: предупреждения onnxruntime засоряют вывод
+        self.key_model, self.bpm_model = (
+            ort.InferenceSession(str(p), opts, providers=['CPUExecutionProvider']) for p in paths)
+        self.kernels = dr_features.make_kernels()
 
     def analyze(self, path, bpm_low=0):
         res = Result(path=str(path))
@@ -338,23 +312,24 @@ class Analyzer:
         return res
 
     def _analyze_waveform(self, y44):
-        key_model, bpm_model, kernels = self._models()
-        with torch.inference_mode():
-            class_id = int(key_model(key_spectrogram(y44).to(self.device)).argmax(dim=1)[0])
+        logits = self.key_model.run(None, {'spec': key_spectrogram(y44)})[0]
+        class_id = int(logits.argmax(axis=1)[0])
 
-            y22 = librosa.resample(y44, orig_sr=KEY_SR, target_sr=dr_features.SR, res_type='soxr_hq')
-            clips = dr_features.split_clips(y22, BPM_MAX_CLIPS)
-            bpm = conf = downbeat = None
-            if clips is not None:
-                hcqm = dr_features.compute_hcqm(clips.to(self.device), *kernels)
-                probs = torch.softmax(bpm_model(hcqm.to(self.device)), dim=1).mean(dim=0)
-                p, cls = torch.max(probs, 0)
-                env, env_pad, low_pad = onset_envelopes(y22)
-                bpm = round(refine_bpm(y22, class_to_bpm(int(cls)), env), 2)
-                conf = round(float(p), 3)
-                downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad)
-                if fitted:
-                    bpm = round(fitted, 2)   # темп по ударам точнее оценки сети
+        y22 = dsp.resample(y44, KEY_SR, dr_features.SR)
+        clips = dr_features.split_clips(y22, BPM_MAX_CLIPS)
+        bpm = conf = downbeat = None
+        if clips is not None:
+            hcqm = dr_features.compute_hcqm(clips, *self.kernels)
+            logits = self.bpm_model.run(None, {'hcqm': hcqm})[0]
+            e = np.exp(logits - logits.max(axis=1, keepdims=True))   # softmax по классам
+            probs = (e / e.sum(axis=1, keepdims=True)).mean(axis=0)
+            cls = int(np.argmax(probs))
+            env, env_pad, low_pad = onset_envelopes(y22)
+            bpm = round(refine_bpm(y22, class_to_bpm(cls), env), 2)
+            conf = round(float(probs[cls]), 3)
+            downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad)
+            if fitted:
+                bpm = round(fitted, 2)   # темп по ударам точнее оценки сети
         return camelot_of(class_id), KEY_NAMES[class_id], bpm, conf, downbeat
 
 

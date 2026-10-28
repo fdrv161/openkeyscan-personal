@@ -6,15 +6,17 @@ from pathlib import Path
 root = Path.cwd()
 
 datas = [
-    (str(root / 'checkpoints' / 'openkeyscan3.pt'), 'checkpoints'),
-    (str(root / 'assets' / 'deeprhythm-0.7.pth'), 'assets'),
+    (str(root / 'models' / 'keynet.onnx'), 'models'),
+    (str(root / 'models' / 'deeprhythm.onnx'), 'models'),
     (str(root / 'okscan' / 'deeprhythm' / 'LICENSE-deeprhythm'), 'licenses'),
     (str(root / 'LICENSE'), 'licenses'),
 ]
 
 # Ненужное для анализа: графика, тесты, оболочки — только раздувают сборку.
-excludes = ['tkinter', 'matplotlib', 'IPython', 'jupyter', 'pytest', 'torchaudio',
-            'torchvision', 'tensorboard', 'pandas', 'wx']
+# torch, librosa и прочее для разработчика стоят в той же .venv — не даём им попасть внутрь.
+excludes = ['tkinter', 'matplotlib', 'IPython', 'jupyter', 'pytest', 'pandas', 'wx',
+            'torch', 'torchaudio', 'torchvision', 'tensorboard', 'nnAudio', 'onnx',
+            'librosa', 'numba', 'llvmlite', 'scipy', 'sklearn', 'soundfile']
 
 a = Analysis(
     ['okscan_cli.py'],

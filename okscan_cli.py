@@ -33,8 +33,6 @@ def _data_dir():
 
 
 DATA_DIR = _data_dir()
-# До импорта librosa: иначе numba не узнает, куда класть скомпилированный код.
-os.environ.setdefault('NUMBA_CACHE_DIR', str(DATA_DIR / 'numba'))
 
 
 def main():

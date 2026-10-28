@@ -1,6 +1,8 @@
 """
 Скачивает файлы, которые не хранятся в git, и проверяет их SHA-256:
 веса модели BPM DeepRhythm 0.7 (AGPL-3.0, github.com/bleugreen/deeprhythm).
+Для сборки не нужно: движок берёт готовый models/deeprhythm.onnx. Веса нужны
+только чтобы заново перевести сеть в ONNX (tools/export_onnx.py).
 
 Запуск: python tools/fetch_assets.py
 Код выхода 0 — всё скачано и проверено, 1 — ошибка (текст в stderr).
