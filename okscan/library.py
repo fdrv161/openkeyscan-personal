@@ -15,7 +15,7 @@ SUPPORTED_FORMATS = {'.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a', '.aac',
 
 # Algorithm version in the cache: change it with any edit that changes results,
 # otherwise old answers stay.
-CACHE_VERSION = 2   # 2: added the start of sound (lead)
+CACHE_VERSION = 3   # 3: first downbeat fix for syncopated kicks; 2: added the start of sound (lead)
 CACHE_LIMIT = 5000   # how many latest files the cache remembers
 
 

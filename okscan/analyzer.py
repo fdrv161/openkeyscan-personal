@@ -49,6 +49,11 @@ ONSET_NFFT = 2048
 # hop matters: spectrum frames with and without silence then match with a shift of 86, so one
 # spectrum serves both refine_bpm and beat_grid (three used to be computed, the slowest part).
 PAD_FRAMES = 86
+# Move the grid half a beat if the bass there is at least this strong relative to the
+# current grid (a near tie) and kick plus snare are clearly stronger. Measured on real
+# beats: a correct grid gave under 0.9 and 1.0, a wrong one 1.14 and 1.33.
+HALF_BEAT_BASS_TIE = 0.95
+HALF_BEAT_SNARE_WIN = 1.15
 
 
 def resource_path(relative):
@@ -129,11 +134,12 @@ def _onset_env(power, **mel):
 
 def onset_envelopes(y22):
     """Onset envelopes from one spectrum: (full without silence, full with leading silence,
-    bass below 250 Hz with silence). beat_grid needs the leading silence, see PAD_FRAMES."""
+    bass below 250 Hz with silence, kick and snare below 4 kHz with silence).
+    beat_grid needs the leading silence, see PAD_FRAMES."""
     y = np.concatenate([np.zeros(PAD_FRAMES * ONSET_HOP, dtype=y22.dtype), y22])
     power = dsp.power_spectrum(y, ONSET_NFFT, ONSET_HOP)
     return (_onset_env(power[:, PAD_FRAMES:]), _onset_env(power),
-            _onset_env(power, fmax=250, n_mels=16))
+            _onset_env(power, fmax=250, n_mels=16), _onset_env(power, fmax=4000, n_mels=64))
 
 
 def refine_bpm(y22, coarse, env=None):
@@ -196,13 +202,20 @@ def _attack_time(y, t, sr, reach_s=0.045):
     return s0 + (int(above[0]) if len(above) else 0), float(diff[rise])
 
 
-def beat_grid(y22, bpm, env=None, low=None):
+def _grid_strength(env, points):
+    """Mean of the envelope maxima within ±3 frames (~17 ms) around the grid points."""
+    return float(np.mean([env[max(0, int(round(x)) - 3):int(round(x)) + 4].max() for x in points]))
+
+
+def beat_grid(y22, bpm, env=None, low=None, body=None):
     """Beat grid of a track: (first downbeat in seconds, refined BPM) or (None, None).
-    env, low are the track's envelopes with leading silence from onset_envelopes (optional).
+    env, low, body are the track's envelopes with leading silence from onset_envelopes (optional).
 
     1) Coarse: the grid offset comes from attacks below 250 Hz (kick, 808), otherwise hats
-       on weak beats pull the grid half a beat away. The music starts at the first beat
-       whose attack is at least half the typical one.
+       on weak beats pull the grid half a beat away. In boom bap the kick often plays the
+       offbeats as much as the beats, then the bass alone cannot tell them apart and the
+       snare decides. The music starts at the first beat whose attack is at least half
+       the typical one.
     2) Fine: for each beat we find the attack start to the sample and fit the line
        "beat number -> time" that passes through the most hits (within 3 ms).
        Beats from a DAW sit on the grid perfectly, so the line gives both the offset
@@ -217,8 +230,8 @@ def beat_grid(y22, bpm, env=None, low=None):
     # (the envelope has nothing to compare with) and the first beat is missed. Subtracted at the end.
     pad = PAD_FRAMES * hop
     y = np.concatenate([np.zeros(pad, dtype=y22.dtype), y22])
-    if env is None or low is None:
-        _, env, low = onset_envelopes(y22)
+    if env is None or low is None or body is None:
+        _, env, low, body = onset_envelopes(y22)
     period = 60.0 * sr / hop / bpm
     n = int((len(env) - 1) // period)
     if n < 8:
@@ -227,6 +240,13 @@ def beat_grid(y22, bpm, env=None, low=None):
     grid = phases[:, None] + np.arange(n)[None, :] * period
     phase = phases[np.argmax(np.interp(grid, np.arange(len(low)), low).sum(axis=1))]
     points = phase + np.arange(n) * period
+    # The other half of the beat: the last point is dropped, it may fall past the end.
+    other = (phase + period / 2) % period + np.arange(n - 1) * period
+    half = 0.0   # the bass grid is this many beats away from the real one
+    if (_grid_strength(low, other) > HALF_BEAT_BASS_TIE * _grid_strength(low, points)
+            and _grid_strength(body, other) > HALF_BEAT_SNARE_WIN * _grid_strength(body, points)):
+        points, half = other, 0.5
+        n -= 1
     # beat strength is the envelope maximum within ±3 frames (~17 ms) around the grid point
     strength = np.array([env[max(0, int(round(x)) - 3):int(round(x)) + 4].max() for x in points])
     typical = np.percentile(strength, 75)
@@ -235,10 +255,13 @@ def beat_grid(y22, bpm, env=None, low=None):
     k0 = int(np.argmax(strength >= 0.5 * typical))
     t0 = points[k0] * hop                      # coarse start of the music, in samples
     step = period * hop                        # beat length, in samples
+    # The fit below follows the hits the bass grid found: they are the sharpest ones
+    # (a snare's attack is smeared, and fitted on snares the tempo came out worse).
+    fit0 = t0 + half * step
 
     ks, ts, ws = [], [], []
     for k in range(0, n - k0):
-        t, w = _attack_time(y, int(round(t0 + k * step)), sr)
+        t, w = _attack_time(y, int(round(fit0 + k * step)), sr)
         if t is not None:
             ks.append(k), ts.append(t), ws.append(w)
     ks, ts, ws = np.array(ks), np.array(ts, dtype=float), np.array(ws)
@@ -255,7 +278,7 @@ def beat_grid(y22, bpm, env=None, low=None):
     best_count, best = 0, None
     for b in np.arange(bpm - 0.06, bpm + 0.06, 0.0005):
         p = 60.0 * sr / b
-        pred = t0 + offsets[:, None] + ks[None, :] * p
+        pred = fit0 + offsets[:, None] + ks[None, :] * p
         counts = (np.abs(ts[None, :] - pred) < tol).sum(axis=1)
         i = int(np.argmax(counts))
         if counts[i] > best_count:
@@ -263,7 +286,7 @@ def beat_grid(y22, bpm, env=None, low=None):
     if best_count < max(8, 0.25 * len(ks)):
         return fallback
     p, off = best
-    inl = np.abs(ts - (t0 + off + ks * p)) < tol
+    inl = np.abs(ts - (fit0 + off + ks * p)) < tol
     c0, c1 = np.linalg.lstsq(np.vstack([np.ones(inl.sum()), ks[inl]]).T, ts[inl], rcond=None)[0]
     fitted = 60.0 * sr / c1
     # Tempo from a DAW is usually "round": 97.4999 -> 97.5. A rounding error of 0.01 BPM
@@ -273,7 +296,7 @@ def beat_grid(y22, bpm, env=None, low=None):
         fitted = nice
     # Recompute the offset for the final tempo: with a "rounded" tempo the old line
     # offset is no longer exact. The median is robust to a few imprecise hits.
-    c0 = float(np.median(ts[inl] - ks[inl] * (60.0 * sr / fitted)))
+    c0 = float(np.median(ts[inl] - ks[inl] * (60.0 * sr / fitted))) - half * 60.0 * sr / fitted
     return round(max(0.0, (c0 - pad) / sr), 4), round(float(fitted), 3)
 
 
@@ -324,10 +347,10 @@ class Analyzer:
             e = np.exp(logits - logits.max(axis=1, keepdims=True))   # softmax over classes
             probs = (e / e.sum(axis=1, keepdims=True)).mean(axis=0)
             cls = int(np.argmax(probs))
-            env, env_pad, low_pad = onset_envelopes(y22)
+            env, env_pad, low_pad, body_pad = onset_envelopes(y22)
             bpm = round(refine_bpm(y22, class_to_bpm(cls), env), 2)
             conf = round(float(probs[cls]), 3)
-            downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad)
+            downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad, body_pad)
             if fitted:
                 bpm = round(fitted, 2)   # tempo from the hits beats the network's estimate
         return camelot_of(class_id), KEY_NAMES[class_id], bpm, conf, downbeat

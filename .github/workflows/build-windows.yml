@@ -60,7 +60,7 @@ jobs:
           # The whole OpenKeyScan folder is unpacked into REAPER's Scripts: scripts, help and the engine folder.
           $pkg = "dist\package\OpenKeyScan"
           New-Item -ItemType Directory -Force $pkg | Out-Null
-          Copy-Item reaper\*.lua, reaper\README.md $pkg
+          Copy-Item reaper\*.lua, reaper\*.md $pkg
           Copy-Item -Recurse dist\OpenKeyScan "$pkg\engine"
           7z a -tzip -mx=7 "dist\OpenKeyScan-REAPER-${{ steps.ver.outputs.version }}.zip" ".\$pkg"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

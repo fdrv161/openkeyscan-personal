@@ -1,5 +1,7 @@
 # OpenKeyScan for REAPER
 
+[Справка на русском](README.ru.md)
+
 Detects the key (regular name, Camelot and Open Key) and tempo (BPM) of the selected items right in REAPER. The scripts have no window of their own: select an item, press a shortcut, get the answer.
 
 Audio files are only read, nothing is ever written to them.

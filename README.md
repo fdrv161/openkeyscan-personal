@@ -6,7 +6,7 @@ The project is based on [OpenKeyScan](https://github.com/rekordcloud/openkeyscan
 
 ## Download and install
 
-The `OpenKeyScan-REAPER-<version>.zip` archive is in [Releases](https://github.com/fdrv161/openkeyscan-reaper/releases). Unpack the OpenKeyScan folder into REAPER's Scripts folder, load "OpenKeyScan - Install actions.lua" through the action list and run it once. Step-by-step instructions and all the actions are described in [reaper/README.md](reaper/README.md), the same file is inside the archive.
+The `OpenKeyScan-REAPER-<version>.zip` archive is in [Releases](https://github.com/fdrv161/openkeyscan-reaper/releases). Unpack the OpenKeyScan folder into REAPER's Scripts folder, load "OpenKeyScan - Install actions.lua" through the action list and run it once. Step-by-step instructions and all the actions are described in [reaper/README.md](reaper/README.md), the same file is inside the archive. [Справка на русском](reaper/README.ru.md).
 
 Requirements: Windows 10 or 11 (64-bit), REAPER 6 or newer, about 200 MB of free disk space.
 
