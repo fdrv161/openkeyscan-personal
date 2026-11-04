@@ -37,7 +37,7 @@ The whole source file of the item is analyzed. MIDI and empty items are skipped.
 
 ## Good to know
 
-- By default the tempo is folded into the 50 to 100 BPM range: 133 BPM is shown as 66.5. This suits hip-hop and trap. Turn on the full tempo with the "Cycle BPM range" action.
+- By default the tempo is folded into the 50 to 100 BPM range: 133 BPM is shown as 66.5. Turn on the full tempo with the "Cycle BPM range" action.
 - If the network is not sure about the tempo, the answer ends with "tempo uncertain, check by ear".
 - If the file's tags already contain both BPM and key, the first action answers from the tags without analysis and says "From file tags". Tags can be inaccurate: to check by analysis, use the second action, it does not read tags.
 - Analyzing a 3-minute track takes a couple of seconds. The very first run after unpacking can take longer, because Windows checks the new files.
