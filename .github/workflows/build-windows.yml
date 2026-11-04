@@ -1,8 +1,8 @@
-# Сборка архива со скриптами REAPER и движком анализа под Windows на GitHub Actions.
-# Запускается только по тегу vX.Y.Z и вручную (Actions → Run workflow): репозиторий
-# приватный, минуты и место под архивы ограничены, поэтому на каждый push не собираем.
-# По тегу архив выкладывается в Releases, при ручном запуске — в Artifacts на 7 дней.
-name: Сборка под Windows
+# Builds the archive with the REAPER scripts and the analysis engine on GitHub Actions (Windows).
+# Runs only on a vX.Y.Z tag and by hand (Actions, Run workflow): there is no build on
+# every push, to save Actions minutes and artifact storage.
+# On a tag the archive goes to Releases; on a manual run it stays in Artifacts for 7 days.
+name: Windows build
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write   # нужно только для выкладки релиза по тегу
+  contents: write   # needed only to publish a release on a tag
 
 jobs:
   build:
@@ -27,24 +27,24 @@ jobs:
           cache: pip
           cache-dependency-path: requirements-win.lock.txt
 
-      - name: Установка зависимостей
+      - name: Install dependencies
         run: python -m pip install -r requirements-win.lock.txt
 
-      - name: Проверка синтаксиса скриптов REAPER (Lua)
+      - name: Check REAPER script syntax (Lua)
         run: |
           python -m pip install lupa==2.8
           python tools/check_lua.py
 
-      - name: Самопроверка движка (Python)
+      - name: Engine self-test (Python)
         run: python -W ignore -m okscan.selftest
 
-      - name: Сборка PyInstaller
+      - name: Build with PyInstaller
         run: pyinstaller --noconfirm --log-level WARN okscan.spec
 
-      - name: Самопроверка собранной программы
+      - name: Self-test of the built program
         run: dist\OpenKeyScan\okscan-cli.exe --selftest
 
-      - name: Версия
+      - name: Version
         id: ver
         shell: bash
         run: |
@@ -54,10 +54,10 @@ jobs:
             echo "version=0.0.${GITHUB_RUN_NUMBER}-dev" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Архив для REAPER
+      - name: Archive for REAPER
         shell: pwsh
         run: |
-          # Папка OpenKeyScan целиком распаковывается в Scripts REAPER: скрипты, справка и движок в engine.
+          # The whole OpenKeyScan folder is unpacked into REAPER's Scripts: scripts, help and the engine folder.
           $pkg = "dist\package\OpenKeyScan"
           New-Item -ItemType Directory -Force $pkg | Out-Null
           Copy-Item reaper\*.lua, reaper\README.md $pkg
@@ -71,11 +71,11 @@ jobs:
           path: dist/package/
           retention-days: 7
 
-      - name: Релиз по тегу
+      - name: Release on tag
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        # Блок «|», а не строка в одну линию: двоеточие с пробелом в тексте YAML принял бы за ключ.
+        # A "|" block, not a one-liner: YAML would read a colon followed by a space in the text as a key.
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/OpenKeyScan-REAPER-*.zip --title "$GITHUB_REF_NAME" --notes "Скрипты OpenKeyScan для REAPER под Windows x64: тональность и BPM выбранных элементов. Распакуйте архив в папку Scripts REAPER, подробности в README.md внутри."
+          gh release create "$GITHUB_REF_NAME" dist/OpenKeyScan-REAPER-*.zip --title "$GITHUB_REF_NAME" --notes "OpenKeyScan scripts for REAPER on Windows x64: key and BPM of selected items. Unpack the archive into the REAPER Scripts folder, see README.md inside for details."

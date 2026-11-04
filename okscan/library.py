@@ -1,7 +1,7 @@
-"""Результат анализа, поиск аудиофайлов в папках, экспорт в CSV и кэш результатов.
+"""Analysis result, finding audio files in folders, CSV export and the results cache.
 
-Модуль лёгкий (без onnxruntime и сетей): консоль сначала смотрит в кэш и грузит
-анализатор, только если что-то действительно нужно посчитать.
+A light module (no onnxruntime or networks): the console checks the cache first and loads
+the analyzer only if something really has to be computed.
 """
 import csv
 import json
@@ -13,10 +13,10 @@ from pathlib import Path
 SUPPORTED_FORMATS = {'.mp3', '.mp4', '.wav', '.flac', '.ogg', '.m4a', '.aac',
                      '.aiff', '.aif', '.au', '.opus', '.wma', '.alac'}
 
-# Номер версии алгоритма в кэше: менять при любой правке, от которой меняется результат,
-# иначе останутся старые ответы.
-CACHE_VERSION = 2   # 2 — добавлено начало звука (lead)
-CACHE_LIMIT = 5000   # столько последних файлов помнит кэш
+# Algorithm version in the cache: change it with any edit that changes results,
+# otherwise old answers stay.
+CACHE_VERSION = 2   # 2: added the start of sound (lead)
+CACHE_LIMIT = 5000   # how many latest files the cache remembers
 
 
 @dataclass
@@ -25,11 +25,11 @@ class Result:
     camelot: str = ''
     openkey: str = ''
     key_name: str = ''
-    bpm: float | None = None        # после приведения к диапазону
-    bpm_raw: float | None = None    # как определил алгоритм
+    bpm: float | None = None        # after folding into the range
+    bpm_raw: float | None = None    # as detected by the algorithm
     bpm_confidence: float | None = None
-    downbeat: float | None = None   # первая сильная доля, секунды от начала файла
-    lead: float | None = None       # где в файле начинается звук, с — для сверки шкалы с REAPER
+    downbeat: float | None = None   # first downbeat, seconds from the start of the file
+    lead: float | None = None       # where sound starts in the file, s: to match REAPER's timeline
     error: str = ''
 
 
@@ -41,9 +41,9 @@ class Track:
 
 
 def fold_bpm(bpm, low):
-    """Приводит темп к диапазону [low, 2*low] умножением/делением на 2.
-    low = 0 — не менять. Лечит самую частую ошибку: темп «вдвое» больше или меньше.
-    Обе границы входят: при low=50 темп 100 остаётся 100, а 133 становится 66,5."""
+    """Folds tempo into the range [low, 2*low] by multiplying or dividing by 2.
+    low = 0 means no change. Fixes the most common error: tempo twice too high or too low.
+    Both bounds are included: with low=50, 100 stays 100 and 133 becomes 66.5."""
     if bpm is None or not low:
         return bpm
     while bpm < low:
@@ -54,7 +54,7 @@ def fold_bpm(bpm, low):
 
 
 def format_bpm(bpm):
-    """128.0 -> «128», 127.46 -> «127.5». Десятые — потолок разумной точности."""
+    """128.0 -> "128", 127.46 -> "127.5". Tenths are the limit of reasonable precision."""
     if bpm is None:
         return ''
     text = f"{bpm:.1f}"
@@ -62,7 +62,7 @@ def format_bpm(bpm):
 
 
 def collect_audio(paths):
-    """Раскрывает папки (со всеми подпапками) в список поддерживаемых аудиофайлов."""
+    """Expands folders (with all subfolders) into a list of supported audio files."""
     out = []
     for p in paths:
         p = Path(p)
@@ -77,11 +77,11 @@ def collect_audio(paths):
 
 
 def write_csv(path, tracks, bpm_low):
-    # Точка с запятой и BOM — чтобы русский Excel открыл файл без вопросов.
+    # Semicolon and BOM: Excel with a decimal comma locale opens the file without questions.
     with open(path, 'w', newline='', encoding='utf-8-sig') as f:
         w = csv.writer(f, delimiter=';')
-        w.writerow(["Файл", "Папка", "BPM", "BPM без приведения", "Уверенность BPM",
-                    "Camelot", "Open Key", "Тональность", "Первая сильная доля, с", "Ошибка"])
+        w.writerow(["File", "Folder", "BPM", "BPM unfolded", "BPM confidence",
+                    "Camelot", "Open Key", "Key", "First downbeat, s", "Error"])
         for t in tracks:
             r = t.result or Result(path=t.path)
             w.writerow([Path(t.path).name, str(Path(t.path).parent),
@@ -93,9 +93,9 @@ def write_csv(path, tracks, bpm_low):
 
 
 class ResultCache:
-    """Кэш результатов в JSON-файле. Ключ — полный путь, отметка — размер и время
-    изменения: перезаписанный (например, заново отрендеренный) файл считается заново.
-    Ошибки не кэшируются: файл могут починить или он ещё дописывается."""
+    """Results cache in a JSON file. The key is the full path, the stamp is size and
+    modification time: an overwritten (say, re-rendered) file is analyzed again.
+    Errors are not cached: the file may get fixed or may still be being written."""
 
     def __init__(self, path):
         self.path = Path(path)
@@ -106,7 +106,7 @@ class ResultCache:
             if data.get('version') == CACHE_VERSION:
                 self.items = dict(data['items'])
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            pass   # нет файла или он испорчен — начинаем с пустого кэша
+            pass   # no file or a damaged one: start with an empty cache
 
     @staticmethod
     def _key(path):
@@ -136,9 +136,9 @@ class ResultCache:
         except OSError:
             return
         data = asdict(result)
-        for field in ('path', 'bpm', 'error'):   # путь — в ключе, bpm зависит от диапазона
+        for field in ('path', 'bpm', 'error'):   # the path is in the key, bpm depends on the range
             data.pop(field)
-        self.items.pop(key, None)   # свежие записи — в конец, старые вытесняются первыми
+        self.items.pop(key, None)   # fresh entries go last, old ones are evicted first
         self.items[key] = {'stamp': stamp, 'result': data}
         self.dirty = True
 
@@ -149,12 +149,12 @@ class ResultCache:
         tmp = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            # Через временный файл: прерванная запись не портит старый кэш.
+            # Through a temporary file: an interrupted write does not damage the old cache.
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, suffix='.part')
             with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump({'version': CACHE_VERSION, 'items': items}, f, ensure_ascii=False)
             os.replace(tmp, self.path)
         except OSError:
-            # кэш — только ускорение, без него всё работает
+            # the cache is only a speedup, everything works without it
             if tmp and os.path.exists(tmp):
                 os.remove(tmp)

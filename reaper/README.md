@@ -1,55 +1,58 @@
-# OpenKeyScan для REAPER
+# OpenKeyScan for REAPER
 
-Определяет тональность (обычное название, Camelot и Open Key) и темп (BPM) выбранных элементов прямо в REAPER. Своего окна у скриптов нет: выделили элемент, нажали горячую клавишу, получили ответ.
+Detects the key (regular name, Camelot and Open Key) and tempo (BPM) of the selected items right in REAPER. The scripts have no window of their own: select an item, press a shortcut, get the answer.
 
-Аудиофайлы только читаются, в них ничего не записывается.
+Audio files are only read, nothing is ever written to them.
 
-## Требования
+## Requirements
 
-- Windows 10 или 11, 64 бита.
-- REAPER 6 или новее.
-- Около 200 МБ свободного места.
+- Windows 10 or 11, 64-bit.
+- REAPER 6 or newer.
+- About 200 MB of free disk space.
 
-## Установка
+## Installation
 
-1. В REAPER откройте Options, затем Show REAPER resource path in explorer/finder, и зайдите в папку Scripts.
-2. Распакуйте туда папку OpenKeyScan из архива целиком. Внутри должны лежать три файла .lua, этот README и папка engine.
-3. Откройте Actions, затем Show action list, нажмите New action, затем Load ReaScript и выберите три файла, имена которых начинаются с «OpenKeyScan - ». Файл OpenKeyScan_core.lua загружать не нужно, это общий код.
-4. По желанию назначьте действиям горячие клавиши.
+1. In REAPER open Options, then Show REAPER resource path in explorer/finder, and go to the Scripts folder.
+2. Unpack the whole OpenKeyScan folder from the archive there. It should contain the .lua files, this README and the engine folder.
+3. Open Actions, then Show action list, press New action, then Load ReaScript, and choose "OpenKeyScan - Install actions.lua".
+4. Run the "OpenKeyScan - Install actions" action once. It adds the other three actions to the action list. OpenKeyScan_core.lua is shared code and does not need loading.
+5. Optionally assign shortcuts to the actions.
 
-## Действия
+Updating from version 2.0.0: action file names have changed. Delete the old OpenKeyScan folder, remove the old actions from the action list, install as above and assign your shortcuts again.
 
-- «OpenKeyScan - Тональность и BPM выбранных элементов» сообщает результат для каждого выбранного элемента, например «beat: 88 BPM, 7A, D minor».
-- «OpenKeyScan - Тональность и BPM, задать темп проекта» делает то же и ещё:
-  - выставляет темп проекта по первому выбранному элементу (если в проекте нет маркеров темпа);
-  - дописывает тональность в имя дорожки: «instr» становится «instr [D minor, 7A]»;
-  - сдвигает все элементы проекта так, чтобы первая сильная доля бита легла на линию такта.
+## Actions
 
-  Всё это отменяется одним Ctrl+Z.
-- «OpenKeyScan - Переключить диапазон BPM» по кругу меняет диапазон, к которому приводится темп: 50–100, 70–140 или без приведения. Выбор запоминается.
+- "OpenKeyScan - Key and BPM of selected items" reports the result for each selected item, for example "beat: 88 BPM, 7A, D minor".
+- "OpenKeyScan - Key and BPM, set project tempo" does the same and also:
+  - sets the project tempo from the first selected item (if the project has no tempo markers);
+  - appends the key to the track name: "instr" becomes "instr [D minor, 7A]";
+  - moves all project items so that the first downbeat of the beat lands on a bar line.
 
-Анализируется исходный файл элемента целиком. MIDI и пустые элементы пропускаются.
+  All of this is undone with a single Ctrl+Z.
+- "OpenKeyScan - Cycle BPM range" cycles the range the tempo is folded into: 50 to 100, 70 to 140, or no folding. The choice is remembered.
 
-## Что нужно знать
+The whole source file of the item is analyzed. MIDI and empty items are skipped.
 
-- По умолчанию темп приводится к диапазону 50–100 BPM: 133 BPM будет показан как 66,5. Так удобнее для хип-хопа и трэпа. Полный темп включается действием «Переключить диапазон BPM».
-- Если сеть не уверена в темпе, к ответу добавляется «темп неуверенный, проверьте на слух».
-- Если в тегах файла уже записаны и BPM, и тональность, первое действие отвечает по тегам, без анализа, и говорит «Из тегов файла». Теги бывают неточными: чтобы проверить анализом, используйте второе действие, оно теги не читает.
-- Анализ трека длиной 3 минуты занимает пару секунд. Самый первый запуск после распаковки бывает дольше: Windows проверяет новые файлы.
-- Результаты запоминаются в папке engine\cache. Повторный анализ того же файла занимает доли секунды. Если файл перезаписали, он анализируется заново.
-- Без OSARA итог показывается окном.
+## Good to know
 
-## Работа со скринридером
+- By default the tempo is folded into the 50 to 100 BPM range: 133 BPM is shown as 66.5. This suits hip-hop and trap. Turn on the full tempo with the "Cycle BPM range" action.
+- If the network is not sure about the tempo, the answer ends with "tempo uncertain, check by ear".
+- If the file's tags already contain both BPM and key, the first action answers from the tags without analysis and says "From file tags". Tags can be inaccurate: to check by analysis, use the second action, it does not read tags.
+- Analyzing a 3-minute track takes a couple of seconds. The very first run after unpacking can take longer, because Windows checks the new files.
+- Results are remembered in the engine\cache folder. Analyzing the same file again takes a fraction of a second. If the file has been overwritten, it is analyzed again.
+- Without OSARA the result is shown in a message window.
 
-Если в REAPER установлена OSARA, все сообщения (начало анализа, итог, ошибки) произносятся скринридером: NVDA, JAWS или Экранным диктором. Окна при этом не появляются, а фокус остаётся там, где был.
+## Using a screen reader
 
-## Удаление
+If OSARA is installed in REAPER, all messages (start of analysis, result, errors) are spoken by your screen reader: NVDA, JAWS or Narrator. No windows appear and the focus stays where it was.
 
-Удалите папку OpenKeyScan из Scripts и уберите три действия из списка действий. Временные файлы анализа лежат в папке %TEMP%\OpenKeyScan-REAPER и удаляются сами.
+## Uninstalling
 
-## Лицензии
+Delete the OpenKeyScan folder from Scripts and remove the actions from the action list. Temporary analysis files are in the %TEMP%\OpenKeyScan-REAPER folder and are deleted automatically.
 
-- Модель тональности OpenKeyScan: MIT (rekordcloud, на основе MusicalKeyCNN).
-- Определение темпа DeepRhythm 0.7: AGPL-3.0 (bleugreen). Поэтому весь пакет распространяется по AGPL-3.0.
+## Licenses
 
-Тексты лицензий лежат в папке engine\_internal\licenses.
+- OpenKeyScan key model: MIT (rekordcloud, based on MusicalKeyCNN).
+- DeepRhythm 0.7 tempo detection: AGPL-3.0 (bleugreen). That is why the whole package is distributed under AGPL-3.0.
+
+The license texts are in the engine\_internal\licenses folder.

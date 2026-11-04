@@ -1,18 +1,18 @@
--- Общий код скриптов OpenKeyScan для REAPER. Это не отдельное действие:
--- его подключают файлы «OpenKeyScan - ….lua», загружать в список действий не нужно.
+-- Shared code of the OpenKeyScan scripts for REAPER. This is not an action of its own:
+-- the "OpenKeyScan - ....lua" files include it, there is no need to load it into the action list.
 --
--- Что делает: берёт исходные файлы выбранных элементов, отдаёт их движку анализа
--- (engine\okscan-cli.exe рядом со скриптами) и сообщает результат.
--- Анализ идёт в отдельном процессе, REAPER при этом не замирает.
+-- What it does: takes the source files of the selected items, passes them to the analysis
+-- engine (engine\okscan-cli.exe next to the scripts) and reports the result.
+-- The analysis runs in a separate process, so REAPER does not freeze.
 
 local M = {}
 
 local TITLE = "OpenKeyScan"
--- Первый запуск грузит модели дольше, поэтому запас щедрый.
+-- The first run loads the models for longer, so the margin is generous.
 local TIMEOUT_BASE, TIMEOUT_PER_FILE = 90, 30
 
--- quiet = true — промежуточное сообщение («Анализирую»): без OSARA его не показываем,
--- чтобы не открывать окно на каждом шаге. Итоги и ошибки показываются всегда.
+-- quiet = true: an interim message ("Analyzing"). Without OSARA it is not shown, so as
+-- not to open a window at every step. Results and errors are always shown.
 local function say(msg, quiet)
   if reaper.osara_outputMessage then
     reaper.osara_outputMessage(msg)
@@ -21,10 +21,10 @@ local function say(msg, quiet)
   end
 end
 
--- Где искать okscan-cli.exe, по порядку:
--- 1) путь, сохранённый в ExtState (OpenKeyScan / cli_path);
--- 2) папка engine рядом со скриптом — так лежит распакованный архив;
--- 3) свежая сборка в папке исходников (reaper\..\dist\OpenKeyScan).
+-- Where to look for okscan-cli.exe, in order:
+-- 1) the path saved in ExtState (OpenKeyScan / cli_path);
+-- 2) the engine folder next to the script: that is how the unpacked archive looks;
+-- 3) a fresh build in the source folder (reaper\..\dist\OpenKeyScan).
 local function find_cli(script_dir)
   local default = (script_dir or "") .. "engine\\okscan-cli.exe"
   local candidates = { reaper.GetExtState(TITLE, "cli_path"), default }
@@ -37,8 +37,8 @@ local function find_cli(script_dir)
   return nil, default
 end
 
--- Исходный файл активного дубля. У обрезанных и развёрнутых элементов источник
--- обёрнут в «секцию», поэтому поднимаемся до самого верхнего родителя.
+-- Source file of the active take. Trimmed and reversed items wrap the source in a
+-- "section", so we climb to the topmost parent.
 local function item_file(item)
   local take = reaper.GetActiveTake(item)
   if not take or reaper.TakeIsMIDI(take) then return nil end
@@ -53,10 +53,10 @@ local function item_file(item)
   return file, reaper.GetTakeName(take), src
 end
 
--- Диапазоны приведения BPM: нижняя граница (0 — не приводить) и название. Первый — по умолчанию.
-local RANGES = { { 50, "50–100 BPM" }, { 70, "70–140 BPM" }, { 0, "без приведения, полный темп" } }
--- Ниже этой уверенности сети темп может быть ошибочным (половина, полтора раза) — предупреждаем.
--- Порог осторожный: верный темп 123.mp3 (88 BPM) имел уверенность 0,45.
+-- BPM folding ranges: lower bound (0 means no folding) and name. The first is the default.
+local RANGES = { { 50, "50 to 100 BPM" }, { 70, "70 to 140 BPM" }, { 0, "no folding, full tempo" } }
+-- Below this network confidence the tempo may be wrong (half, one and a half times): warn.
+-- The threshold is cautious: a correct tempo of 88 BPM was seen with a confidence of 0.45.
 local LOW_CONFIDENCE = 0.3
 
 local function bpm_low()
@@ -67,7 +67,7 @@ local function bpm_low()
   return RANGES[1][1]
 end
 
--- Как fold_bpm в движке: умножаем или делим на 2, пока темп не попадёт в [low, 2*low].
+-- Like fold_bpm in the engine: multiply or divide by 2 until the tempo falls into [low, 2*low].
 local function fold_bpm(bpm, low)
   if low == 0 then return bpm end
   while bpm < low do bpm = bpm * 2 end
@@ -80,7 +80,7 @@ local function format_bpm(bpm)
   return (text:gsub("%.0$", ""))
 end
 
--- Первое непустое значение тега из списка имён (REAPER 6.2 и новее) или nil.
+-- First non-empty tag value from a list of names (REAPER 6.2 and newer), or nil.
 local function file_tag(src, ids)
   if not reaper.GetMediaFileMetadata then return nil end
   for _, id in ipairs(ids) do
@@ -90,7 +90,7 @@ local function file_tag(src, ids)
   return nil
 end
 
--- BPM и тональность из тегов файла или nil, если чего-то нет.
+-- BPM and key from the file's tags, or nil if something is missing.
 local function tags_of(src)
   local text = (file_tag(src, { "ID3:TBPM", "XMP:dm/tempo", "VORBIS:BPM" }) or ""):gsub(",", ".")
   local bpm = tonumber(text)
@@ -105,9 +105,9 @@ local function split_tabs(line)
   return t
 end
 
--- Дописывает тональность в конец имени дорожки: «instr» -> «instr [D minor, 7A]».
--- Старая пометка такого же вида сначала убирается, чтобы при повторном запуске
--- скобки не копились. Дорожка с несколькими элементами получает тональность первого.
+-- Appends the key to the end of the track name: "instr" -> "instr [D minor, 7A]".
+-- An older mark of the same kind is removed first, so that brackets do not pile up on
+-- repeated runs. A track with several items gets the key of the first one.
 local function tag_track_names(items, results)
   local done, count = {}, 0
   for _, it in ipairs(items) do
@@ -117,7 +117,7 @@ local function tag_track_names(items, results)
        and reaper.ValidatePtr2(0, track, "MediaTrack*") then
       done[track] = true
       local _, name = reaper.GetSetMediaTrackInfo_String(track, "P_NAME", "", false)
-      -- «[что угодно, 7A]» в самом конце имени — наша прошлая пометка
+      -- "[anything, 7A]" at the very end of the name is our previous mark
       name = name:gsub("%s*%[[^%[%]]*%d+[AB]%]$", "")
       local tag = "[" .. r.key .. ", " .. r.camelot .. "]"
       reaper.GetSetMediaTrackInfo_String(track, "P_NAME", name ~= "" and (name .. " " .. tag) or tag, true)
@@ -127,8 +127,8 @@ local function tag_track_names(items, results)
   return count
 end
 
--- Сдвигает элемент item целиком на delta секунд. То, что уезжает левее начала
--- проекта, подрезается (сдвигается начало звука внутри элемента), а не теряется.
+-- Moves the whole item by delta seconds. What would go left of the project start is
+-- trimmed (the start of the audio inside the item moves), not lost.
 local function shift_item(item, delta)
   local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION") + delta
   if pos >= 0 then
@@ -138,7 +138,7 @@ local function shift_item(item, delta)
   local cut = -pos
   local len = reaper.GetMediaItemInfo_Value(item, "D_LENGTH")
   if cut >= len then
-    -- элемент целиком ушёл бы до начала проекта — оставляем его в нуле как есть
+    -- the whole item would end up before the project start: leave it at zero as it is
     reaper.SetMediaItemInfo_Value(item, "D_POSITION", 0)
     return false
   end
@@ -155,23 +155,23 @@ local function shift_item(item, delta)
   return true
 end
 
--- Порог «здесь начинается звук» (−50 дБFS) — тот же, что у движка (LEAD_LEVEL).
+-- The "sound starts here" threshold (-50 dBFS), the same as in the engine (LEAD_LEVEL).
 local LEAD_LEVEL = 10 ^ (-50 / 20)
 
--- Насколько шкала REAPER сдвинута относительно шкалы движка, в секундах исходного файла.
--- Декодеры могут по-разному срезать начало: у MP3 без заголовка LAME разница
--- доходит до десятков миллисекунд, и бит вставал бы мимо такта. Движок сообщает,
--- где в файле начинается звук (lead); здесь то же самое меряем через REAPER.
+-- How far REAPER's timeline is shifted from the engine's, in seconds of the source file.
+-- Decoders may trim the start differently: for MP3 without a LAME header the difference
+-- reaches tens of milliseconds and the beat would land off the bar. The engine reports
+-- where sound starts in the file (lead); here we measure the same through REAPER.
 local function decoder_offset(take, lead)
   if not lead then return 0 end
   local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
   local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
-  if lead < offs then return 0 end   -- начало звука обрезано в элементе, сверить нечем
+  if lead < offs then return 0 end   -- the start of sound is trimmed in the item, nothing to compare
   local src = reaper.GetMediaItemTake_Source(take)
   local sr = reaper.GetMediaSourceSampleRate(src)
   local nch = math.max(1, reaper.GetMediaSourceNumChannels(src))
   if sr <= 0 then return 0 end
-  -- окно 0,4 с от «за 0,2 с до начала звука по движку» (секунды файла), но не раньше начала дубля
+  -- a 0.4 s window from "0.2 s before the engine's start of sound" (file seconds), but not before the take start
   local from = math.max(offs, lead - 0.2)
   local start = (from - offs) / rate
   local n = math.floor(0.4 * sr / rate)
@@ -184,12 +184,12 @@ local function decoder_offset(take, lead)
   for i = 1, #data do
     if math.abs(data[i]) > LEAD_LEVEL then
       local idx = math.floor((i - 1) / nch)
-      -- звук есть с первого же отсчёта, а окно начато не с начала файла:
-      -- настоящего начала звука не видно, сверить нельзя
+      -- sound is there from the very first sample and the window does not start at the file start:
+      -- the real start of sound is not visible, so no comparison is possible
       if idx == 0 and from > 0 then return 0 end
       local found = from + idx / sr * rate
       local delta = found - lead
-      -- больше 0,15 с — это уже не декодер (эффекты, другой файл), не трогаем
+      -- more than 0.15 s is not the decoder any more (effects, another file): leave it alone
       return math.abs(delta) < 0.15 and delta or 0
     end
   end
@@ -198,94 +198,94 @@ end
 
 local function describe_shift(delta)
   local ms = math.floor(math.abs(delta) * 1000 + 0.5)
-  local amount = ms < 1000 and (ms .. " мс") or (string.format("%.2f", math.abs(delta)) .. " с")
-  return (delta > 0 and "вправо на " or "влево на ") .. amount
+  local amount = ms < 1000 and (ms .. " ms") or (string.format("%.2f", math.abs(delta)) .. " s")
+  return (delta > 0 and "right by " or "left by ") .. amount
 end
 
--- Ставит первую сильную долю бита (секунды от начала файла) на ближайшую линию
--- такта и сдвигает на столько же ВСЕ элементы проекта, чтобы ничего не разъехалось.
--- Возвращает фразу для итогового сообщения.
+-- Puts the first downbeat of the beat (seconds from the file start) on the nearest bar
+-- line and moves ALL project items by the same amount, so that nothing drifts apart.
+-- Returns a phrase for the final message.
 local function align_project_to_bar(it, downbeat, bpm, lead)
   if not downbeat then
-    return "Первую сильную долю найти не удалось, элементы не сдвинуты"
+    return "Could not find the first downbeat, items were not moved"
   end
   local item = it.item
   if not reaper.ValidatePtr2(0, item, "MediaItem*") then
-    return "Элемент пропал из проекта, выравнивание пропущено"
+    return "The item is gone from the project, alignment skipped"
   end
   local take = reaper.GetActiveTake(item)
   if not take then
-    return "У элемента нет активного дубля, выравнивание пропущено"
+    return "The item has no active take, alignment skipped"
   end
   local pos = reaper.GetMediaItemInfo_Value(item, "D_POSITION")
   local offs = reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")
   local rate = reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE")
   local fix = decoder_offset(take, lead)
   downbeat = downbeat + fix
-  -- О поправке говорим, только если она заметна: так видно, что сверка сработала.
+  -- The correction is mentioned only if it is noticeable: that shows the check worked.
   local note = math.abs(fix) >= 0.002
-      and (", учтён сдвиг начала файла " .. math.floor(math.abs(fix) * 1000 + 0.5) .. " мс") or ""
-  -- Если начало элемента обрезано дальше первой доли, берём первый такт внутри элемента.
+      and (", file start offset of " .. math.floor(math.abs(fix) * 1000 + 0.5) .. " ms applied") or ""
+  -- If the item start is trimmed past the first downbeat, take the first bar inside the item.
   if downbeat < offs and bpm then
     local bar = 4 * 60 / bpm
     downbeat = downbeat + math.ceil((offs - downbeat) / bar) * bar
   end
   local beat_time = pos + (downbeat - offs) / rate
 
-  -- ближайшая линия такта по текущей сетке проекта (темп уже выставлен выше)
+  -- nearest bar line on the current project grid (the tempo is already set above)
   local _, measure = reaper.TimeMap2_timeToBeats(0, beat_time)
   local here = reaper.TimeMap2_beatsToTime(0, 0, measure)
   local nextbar = reaper.TimeMap2_beatsToTime(0, 0, measure + 1)
   local target = (beat_time - here <= nextbar - beat_time) and here or nextbar
   local delta = target - beat_time
   if math.abs(delta) < 0.0005 then
-    return "Бит уже стоит по сетке" .. note
+    return "The beat is already on the grid" .. note
   end
 
   local trimmed = false
   for i = 0, reaper.CountMediaItems(0) - 1 do
     if shift_item(reaper.GetMediaItem(0, i), delta) then trimmed = true end
   end
-  return "Все элементы сдвинуты " .. describe_shift(delta) .. ", сильная доля бита на такте " ..
-         (measure + (target == here and 1 or 2)) .. (trimmed and ", начало подрезано" or "") .. note
+  return "All items moved " .. describe_shift(delta) .. ", downbeat on bar " ..
+         (measure + (target == here and 1 or 2)) .. (trimmed and ", start trimmed" or "") .. note
 end
 
 local function busy_since()
   local v = tonumber(reaper.GetExtState(TITLE, "busy"))
-  -- Метка старше 15 минут — остаток от прерванного запуска, её не считаем.
+  -- A mark older than 15 minutes is left over from an interrupted run: ignore it.
   if v and os.time() - v < 900 then return v end
   return nil
 end
 
--- mode.set_tempo = true — после анализа выставить темп проекта по первому элементу.
--- mode.script_dir — папка скрипта (со слешем на конце), чтобы найти программу рядом.
--- Действие «Переключить диапазон BPM»: по кругу 50–100, 70–140, без приведения.
--- Выбор запоминается между запусками REAPER.
+-- mode.set_tempo = true: after the analysis, set the project tempo from the first item.
+-- mode.script_dir: the script's folder (with a trailing slash), to find the engine next to it.
+-- The "Cycle BPM range" action: 50 to 100, 70 to 140, no folding, in a circle.
+-- The choice is kept between REAPER sessions.
 function M.cycle_range()
   local cur, nxt = bpm_low(), RANGES[1]
   for i, r in ipairs(RANGES) do
     if r[1] == cur then nxt = RANGES[i % #RANGES + 1] end
   end
   reaper.SetExtState(TITLE, "bpm_low", tostring(nxt[1]), true)
-  say("Диапазон BPM: " .. nxt[2])
+  say("BPM range: " .. nxt[2])
 end
 
 function M.run(mode)
   if busy_since() then
-    say("Анализ OpenKeyScan уже идёт, дождитесь результата.")
+    say("OpenKeyScan analysis is already running, wait for the result.")
     return
   end
 
   local cli, expected = find_cli(mode and mode.script_dir)
   if not cli then
-    say("Не найден движок анализа OpenKeyScan. Распакуйте архив целиком, чтобы папка engine " ..
-        "лежала рядом со скриптами. Ожидаемый путь: " .. expected)
+    say("OpenKeyScan analysis engine not found. Unpack the whole archive so that the engine folder " ..
+        "sits next to the scripts. Expected path: " .. expected)
     return
   end
 
   local count = reaper.CountSelectedMediaItems(0)
   if count == 0 then
-    say("Нет выбранных элементов. Выберите элемент со звуком и запустите действие снова.")
+    say("No items selected. Select an item with audio and run the action again.")
     return
   end
 
@@ -302,14 +302,14 @@ function M.run(mode)
     end
   end
   if #files == 0 then
-    say("У выбранных элементов нет аудиофайлов: MIDI и пустые элементы не анализируются.")
+    say("The selected items have no audio files: MIDI and empty items are not analyzed.")
     return
   end
 
   local low = bpm_low()
 
-  -- Только сообщить: если у всех файлов в тегах есть и BPM, и тональность, движок не нужен.
-  -- Для «задать темп» теги не годятся — в них нет первой сильной доли.
+  -- Report only: if all files have both BPM and key in their tags, the engine is not needed.
+  -- Tags are no use for "set tempo": they have no first downbeat.
   if not (mode and mode.set_tempo) then
     local parts = {}
     for _, it in ipairs(items) do
@@ -322,7 +322,7 @@ function M.run(mode)
       parts[#parts + 1] = name .. ": " .. format_bpm(fold_bpm(bpm, low)) .. " BPM, " .. key
     end
     if parts then
-      say(table.concat(parts, ". ") .. ". Из тегов файла.")
+      say(table.concat(parts, ". ") .. ". From file tags.")
       return
     end
   end
@@ -335,16 +335,16 @@ function M.run(mode)
 
   local f = io.open(list_path, "w")
   if not f then
-    say("Не удалось создать временный файл в папке " .. dir)
+    say("Could not create a temporary file in the folder " .. dir)
     return
   end
   f:write(table.concat(files, "\n"), "\n")
   f:close()
 
-  -- -2: не ждать завершения и запустить окно консоли свёрнутым.
+  -- -2: do not wait for completion, and start the console window minimized.
   reaper.ExecProcess('"' .. cli .. '" --list "' .. list_path .. '" --out "' .. out_path .. '" --range ' .. low, -2)
   reaper.SetExtState(TITLE, "busy", tostring(os.time()), false)
-  say(#files == 1 and "Анализирую." or ("Анализирую файлов: " .. #files .. "."), true)
+  say(#files == 1 and "Analyzing." or ("Analyzing " .. #files .. " files."), true)
 
   local started = reaper.time_precise()
   local timeout = TIMEOUT_BASE + TIMEOUT_PER_FILE * #files
@@ -354,7 +354,7 @@ function M.run(mode)
     os.remove(list_path)
     os.remove(out_path)
   end
-  -- Если скрипт остановят до результата (или закроют REAPER), признак «занято» всё равно снимется.
+  -- If the script is stopped before the result (or REAPER is closed), the busy mark is still cleared.
   reaper.atexit(cleanup)
 
   local function finish(text)
@@ -364,7 +364,7 @@ function M.run(mode)
     for line in text:gmatch("[^\n]+") do
       local c = split_tabs(line)
       if c[1] == "ERROR" then
-        say("Ошибка OpenKeyScan: " .. (c[6] or "неизвестная ошибка"))
+        say("OpenKeyScan error: " .. (c[6] or "unknown error"))
         return
       end
       results[c[1]] = { bpm = c[2], camelot = c[3], key = c[4], openkey = c[5], err = c[6],
@@ -377,13 +377,13 @@ function M.run(mode)
       local r = results[it.file]
       local name = it.name ~= "" and it.name or it.file:match("[^\\/]+$")
       if not r then
-        parts[#parts + 1] = name .. ": нет результата"
+        parts[#parts + 1] = name .. ": no result"
       elseif r.err and r.err ~= "" then
-        parts[#parts + 1] = name .. ": ошибка, " .. r.err
+        parts[#parts + 1] = name .. ": error, " .. r.err
       else
-        local bpm = r.bpm ~= "" and (r.bpm .. " BPM") or "темп не определён"
+        local bpm = r.bpm ~= "" and (r.bpm .. " BPM") or "tempo not detected"
         if r.conf and r.conf < LOW_CONFIDENCE and r.bpm ~= "" then
-          bpm = bpm .. " (темп неуверенный, проверьте на слух)"
+          bpm = bpm .. " (tempo uncertain, check by ear)"
         end
         parts[#parts + 1] = name .. ": " .. bpm .. ", " .. r.camelot .. ", " .. r.key
         if not first_bpm and tonumber(r.bpm) then
@@ -394,34 +394,34 @@ function M.run(mode)
     local msg = table.concat(parts, ". ")
 
     if mode and mode.set_tempo then
-      -- Темп, имена дорожек и сдвиг — одно действие отмены: Ctrl+Z откатывает всё сразу.
-      -- PreventUIRefresh: экран не перерисовывается после каждого сдвинутого элемента.
-      -- pcall: при сбое посередине блок отмены и перерисовка всё равно закрываются.
+      -- Tempo, track names and the shift are one undo step: Ctrl+Z reverts everything at once.
+      -- PreventUIRefresh: the screen is not redrawn after each moved item.
+      -- pcall: if something fails midway, the undo block and redraw are still closed.
       reaper.PreventUIRefresh(1)
       reaper.Undo_BeginBlock()
       local ok, err = pcall(function()
         if not first_bpm then
-          msg = msg .. ". Темп проекта не изменён: BPM не определён"
+          msg = msg .. ". Project tempo not changed: BPM not detected"
         elseif reaper.CountTempoTimeSigMarkers(0) > 0 then
-          msg = msg .. ". Темп проекта не изменён: в проекте есть маркеры темпа"
+          msg = msg .. ". Project tempo not changed: the project has tempo markers"
         else
           reaper.SetCurrentBPM(0, first_bpm, false)
-          msg = msg .. ". Темп проекта: " .. first_bpm
+          msg = msg .. ". Project tempo: " .. first_bpm
         end
         local renamed = tag_track_names(items, results)
         if renamed > 0 then
-          msg = msg .. (renamed == 1 and ". Тональность записана в имя дорожки"
-                        or (". Тональность записана в имена дорожек: " .. renamed))
+          msg = msg .. (renamed == 1 and ". Key added to the track name"
+                        or (". Key added to track names: " .. renamed))
         end
         if first_item then
           msg = msg .. ". " .. align_project_to_bar(first_item.it, first_item.r.downbeat, first_bpm, first_item.r.lead)
         end
       end)
-      reaper.Undo_EndBlock("OpenKeyScan: темп, тональность и выравнивание по такту", -1)
+      reaper.Undo_EndBlock("OpenKeyScan: tempo, key and bar alignment", -1)
       reaper.PreventUIRefresh(-1)
       reaper.UpdateArrange()
       if not ok then
-        msg = msg .. ". Не удалось изменить проект: " .. tostring(err)
+        msg = msg .. ". Could not change the project: " .. tostring(err)
       end
       msg = msg .. "."
     end
@@ -438,8 +438,8 @@ function M.run(mode)
     end
     if reaper.time_precise() - started > timeout then
       cleanup()
-      say("OpenKeyScan не ответила за " .. math.floor(timeout) .. " секунд. " ..
-          "Проверьте, что программа запускается, и попробуйте ещё раз.")
+      say("OpenKeyScan did not respond in " .. math.floor(timeout) .. " seconds. " ..
+          "Check that the engine starts and try again.")
       return
     end
     reaper.defer(poll)

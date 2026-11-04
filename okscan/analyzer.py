@@ -1,13 +1,13 @@
 """
-Движок анализа: один раз декодирует файл и определяет по нему тональность и темп.
+Analysis engine: decodes a file once and detects its key and tempo from it.
 
-Тональность — модель OpenKeyScan (openkeyscan3.pt), предобработка как в
-openkeyscan_analyzer_server.py, чтобы результаты совпадали с оригиналом.
-Темп — DeepRhythm 0.7 (грубая оценка) + уточнение по автокорреляции атак (дробный BPM).
-Обе сети переведены в ONNX (tools/export_onnx.py) и запускаются через onnxruntime,
-обработка звука — на numpy (okscan/dsp.py): без torch, librosa и numba запуск в разы быстрее.
+Key: the OpenKeyScan model (openkeyscan3.pt), preprocessing as in
+openkeyscan_analyzer_server.py, so that results match the original.
+Tempo: DeepRhythm 0.7 (coarse estimate) + refinement by onset autocorrelation (fractional BPM).
+Both networks are converted to ONNX (tools/export_onnx.py) and run through onnxruntime,
+audio processing is numpy (okscan/dsp.py): without torch, librosa and numba startup is much faster.
 
-Файлы открываются только на чтение — никаких тегов и записи в аудио.
+Files are opened read-only: no tags, nothing is ever written to the audio.
 """
 import os
 import sys
@@ -24,8 +24,8 @@ from okscan.library import Result, SUPPORTED_FORMATS, fold_bpm
 
 KEY_SR = 44100
 
-# Индекс класса сети тональности -> название (как в dataset.CAMELOT_MAPPING).
-# 0–11 — минор (1A–12A), 12–23 — мажор (1B–12B).
+# Key network class index -> name (as in dataset.CAMELOT_MAPPING).
+# 0-11 are minor (1A-12A), 12-23 are major (1B-12B).
 KEY_NAMES = [
     'Ab minor', 'Eb minor', 'Bb minor', 'F minor', 'C minor', 'G minor',
     'D minor', 'A minor', 'E minor', 'B minor', 'F# minor', 'C# minor',
@@ -33,26 +33,26 @@ KEY_NAMES = [
     'F major', 'C major', 'G major', 'D major', 'A major', 'E major',
 ]
 
-# Не больше 64 кусков по 8 секунд (~8,5 минут) на оценку темпа: на длинных миксах
-# иначе уходят гигабайты памяти. Обычный трек укладывается целиком.
+# At most 64 clips of 8 seconds (~8.5 minutes) for the tempo estimate: long mixes
+# would otherwise take gigabytes of memory. A normal track fits entirely.
 BPM_MAX_CLIPS = 64
-# Для уточнения BPM хватает 10 минут из середины трека.
+# 10 minutes from the middle of the track are enough to refine the BPM.
 REFINE_MAX_SECONDS = 600
 
-# Порог «здесь начинается звук» (−50 дБFS) — тот же, что в скрипте REAPER (LEAD_LEVEL).
+# The "sound starts here" threshold (-50 dBFS), the same as in the REAPER script (LEAD_LEVEL).
 LEAD_LEVEL = 10 ** (-50 / 20)
 
-# Огибающие атак: шаг 128 отсчётов (~5,8 мс при 22 050 Гц), окно 2048.
+# Onset envelopes: hop of 128 samples (~5.8 ms at 22,050 Hz), window of 2048.
 ONSET_HOP = 128
 ONSET_NFFT = 2048
-# Тишина перед треком для beat_grid — ровно 86 кадров (~0,5 с). Кратность шагу важна:
-# тогда кадры спектра с тишиной и без совпадают со сдвигом на 86, и одного спектра
-# хватает и для refine_bpm, и для beat_grid (раньше считалось три — это было самое долгое).
+# Silence before the track for beat_grid: exactly 86 frames (~0.5 s). Being a multiple of the
+# hop matters: spectrum frames with and without silence then match with a shift of 86, so one
+# spectrum serves both refine_bpm and beat_grid (three used to be computed, the slowest part).
 PAD_FRAMES = 86
 
 
 def resource_path(relative):
-    """Путь к файлу рядом с кодом или внутри сборки PyInstaller."""
+    """Path to a file next to the code or inside the PyInstaller build."""
     base = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent))
     return base / relative
 
@@ -67,7 +67,7 @@ def openkey_of(camelot):
 
 
 def _first_sound(frame):
-    """Номер первого отсчёта кадра громче LEAD_LEVEL по любому каналу или None."""
+    """Index of the first sample in the frame louder than LEAD_LEVEL on any channel, or None."""
     a = frame.to_ndarray()
     if not frame.format.is_planar:
         a = a.reshape(-1, len(frame.layout.channels)).T
@@ -78,16 +78,16 @@ def _first_sound(frame):
 
 
 def decode_audio(path):
-    """Декодирует любой формат через PyAV (FFmpeg внутри) в моно float32, 44,1 кГц,
-    пик 0,95 — так же, как оригинальный сервер делает для MP3 на Windows.
+    """Decodes any format through PyAV (FFmpeg inside) to mono float32, 44.1 kHz,
+    peak 0.95: the same as the original server does for MP3 on Windows.
 
-    Возвращает (звук, начало звука в секундах). Начало считается по исходным
-    отсчётам до сведения в моно — так же его меряет скрипт REAPER, и по разнице
-    видно, по-разному ли FFmpeg и REAPER обрезают начало файла."""
+    Returns (audio, start of sound in seconds). The start is measured on the source
+    samples before the mono downmix, as the REAPER script measures it, so the difference
+    shows whether FFmpeg and REAPER trim the start of the file differently."""
     container = av.open(str(path))
     try:
         if not container.streams.audio:
-            raise ValueError("в файле нет звуковой дорожки")
+            raise ValueError("the file has no audio stream")
         stream = container.streams.audio[0]
         resampler = av.AudioResampler(format='flt', layout='mono', rate=KEY_SR)
         chunks = []
@@ -105,7 +105,7 @@ def decode_audio(path):
     finally:
         container.close()
     if not chunks:
-        raise ValueError("не удалось прочитать звук")
+        raise ValueError("could not read the audio")
     y = np.ascontiguousarray(np.concatenate(chunks), dtype=np.float32)
     peak = np.abs(y).max()
     if peak > 0:
@@ -114,22 +114,22 @@ def decode_audio(path):
 
 
 def key_spectrogram(y44):
-    """Лог-CQT с параметрами оригинала: 105 бинов, 24 на октаву, от 65 Гц, шаг 0,2 с."""
+    """Log-CQT with the original's parameters: 105 bins, 24 per octave, from 65 Hz, hop 0.2 s."""
     cqt = dsp.cqt(y44, sr=KEY_SR, hop=8820, fmin=65, n_bins=105, bpo=24)
-    spec = np.log1p(np.abs(cqt))[:, :-2]   # как в оригинале: два последних кадра отбрасываются
+    spec = np.log1p(np.abs(cqt))[:, :-2]   # as in the original: the last two frames are dropped
     return np.ascontiguousarray(spec, dtype=np.float32)[None, None]
 
 
 def _onset_env(power, **mel):
-    """Огибающая атак по готовому спектру мощности — то же, что
-    librosa.onset.onset_strength(y=...), но без повторного STFT."""
+    """Onset envelope from a ready power spectrum: the same as
+    librosa.onset.onset_strength(y=...), but without a second STFT."""
     S = dsp.mel_filters(dr_features.SR, ONSET_NFFT, **mel) @ power
     return dsp.onset_strength(dsp.power_to_db(S), n_fft=ONSET_NFFT, hop=ONSET_HOP)
 
 
 def onset_envelopes(y22):
-    """Огибающие атак по одному спектру: (полная без тишины, полная с тишиной спереди,
-    басовая ниже 250 Гц с тишиной). Тишину спереди добавляет beat_grid, см. PAD_FRAMES."""
+    """Onset envelopes from one spectrum: (full without silence, full with leading silence,
+    bass below 250 Hz with silence). beat_grid needs the leading silence, see PAD_FRAMES."""
     y = np.concatenate([np.zeros(PAD_FRAMES * ONSET_HOP, dtype=y22.dtype), y22])
     power = dsp.power_spectrum(y, ONSET_NFFT, ONSET_HOP)
     return (_onset_env(power[:, PAD_FRAMES:]), _onset_env(power),
@@ -137,13 +137,13 @@ def onset_envelopes(y22):
 
 
 def refine_bpm(y22, coarse, env=None):
-    """Уточняет целый BPM от DeepRhythm до дробного.
+    """Refines the integer BPM from DeepRhythm to a fractional one.
 
-    Сеть выдаёт класс шириной 1 BPM (нижнюю границу), поэтому ищем лучший темп
-    в окне [coarse-1, coarse+2] по «гребёнке» автокорреляции огибающей атак:
-    сумма автокорреляции на задержках 1..16 долей. Чем больше долей, тем точнее —
-    ошибка в 0,1% на 16 долях уже заметно сдвигает пик.
-    env — готовая огибающая всего трека из onset_envelopes (необязательно).
+    The network outputs a class 1 BPM wide (its lower bound), so we look for the best tempo
+    in the window [coarse-1, coarse+2] with an autocorrelation "comb" of the onset envelope:
+    the sum of autocorrelation at lags of 1..16 beats. More beats mean more precision:
+    a 0.1% error over 16 beats already shifts the peak noticeably.
+    env is a ready envelope of the whole track from onset_envelopes (optional).
     """
     sr = dr_features.SR
     hop = ONSET_HOP
@@ -151,7 +151,7 @@ def refine_bpm(y22, coarse, env=None):
     if len(y22) > REFINE_MAX_SECONDS * sr:
         start = (len(y22) - REFINE_MAX_SECONDS * sr) // 2
         y22 = y22[start:start + REFINE_MAX_SECONDS * sr]
-        env = None   # готовая огибающая — по всему треку, а нужна середина
+        env = None   # the ready envelope covers the whole track, but the middle is needed
     if env is None:
         env = _onset_env(dsp.power_spectrum(y22, ONSET_NFFT, hop))
     env = env - env.mean()
@@ -167,11 +167,11 @@ def refine_bpm(y22, coarse, env=None):
 
 
 def _attack_time(y, t, sr, reach_s=0.045):
-    """Точное начало атаки (в отсчётах) около момента t (в отсчётах) и её резкость.
+    """Exact attack start (in samples) near moment t (in samples) and its sharpness.
 
-    От самого резкого роста громкости в окне ±reach_s идём назад до ближайшей
-    ямки, затем ищем первый отсчёт выше «фон + 10% прироста». RMS-кадры
-    по 128 отсчётов размазывают атаку, поэтому последний шаг — по самому сигналу.
+    From the sharpest loudness rise in the ±reach_s window we walk back to the nearest
+    dip, then look for the first sample above "floor + 10% of the rise". RMS frames of
+    128 samples smear the attack, so the last step works on the signal itself.
     """
     fine = 32
     reach = int(reach_s * sr)
@@ -189,32 +189,32 @@ def _attack_time(y, t, sr, reach_s=0.045):
     a = np.abs(y[s0:base + rise * fine + 256])
     if len(a) == 0:
         return s0, float(diff[rise])
-    # фон — пик предыдущих 10 мс: по медиане тянущиеся ноты (бас, пэд) своими
-    # гребнями ложно «пересекали» порог раньше удара
+    # floor is the peak of the previous 10 ms: with a median, the crests of sustained
+    # notes (bass, pads) falsely "crossed" the threshold before the hit
     floor = float(np.abs(y[max(0, s0 - 221):s0]).max()) if s0 > 0 else 0.0
     above = np.nonzero(a > floor + 0.1 * (a.max() - floor))[0]
     return s0 + (int(above[0]) if len(above) else 0), float(diff[rise])
 
 
 def beat_grid(y22, bpm, env=None, low=None):
-    """Сетка долей трека: (первая сильная доля в секундах, уточнённый BPM) или (None, None).
-    env, low — огибающие трека с тишиной спереди из onset_envelopes (необязательно).
+    """Beat grid of a track: (first downbeat in seconds, refined BPM) or (None, None).
+    env, low are the track's envelopes with leading silence from onset_envelopes (optional).
 
-    1) Грубо: сдвиг сетки ищем по атакам ниже 250 Гц (бочка, 808) — хэты на слабых
-       долях иначе утягивают сетку на полдоли. Начало музыки — первая доля, где
-       атака хотя бы вполовину от типичной.
-    2) Точно: у каждой доли находим начало атаки с точностью до отсчёта и подбираем
-       прямую «номер доли -> время», через которую проходит больше всего ударов
-       (в пределах 3 мс). Биты из DAW стоят по сетке идеально, и прямая даёт и сдвиг,
-       и темп до тысячных. Одиночный звук на первой доле (не кик) её не сбивает.
-    Если ударов по прямой мало (живая игра, сложный ритм) — берём начало атаки
-    первой доли как есть, а темп не трогаем.
+    1) Coarse: the grid offset comes from attacks below 250 Hz (kick, 808), otherwise hats
+       on weak beats pull the grid half a beat away. The music starts at the first beat
+       whose attack is at least half the typical one.
+    2) Fine: for each beat we find the attack start to the sample and fit the line
+       "beat number -> time" that passes through the most hits (within 3 ms).
+       Beats from a DAW sit on the grid perfectly, so the line gives both the offset
+       and the tempo to thousandths. A lone non-kick sound on the first beat cannot shift it.
+    If few hits lie on the line (live playing, complex rhythm), the attack start of the
+    first beat is taken as is and the tempo is left alone.
     """
     sr, hop = dr_features.SR, ONSET_HOP
     if not bpm:
         return None, None
-    # Тишина спереди: иначе удар в самой первой миллисекунде файла не даёт атаки
-    # (огибающей не с чем сравнить) и первая доля пропускается. В конце её вычитаем.
+    # Leading silence: otherwise a hit in the very first millisecond gives no attack
+    # (the envelope has nothing to compare with) and the first beat is missed. Subtracted at the end.
     pad = PAD_FRAMES * hop
     y = np.concatenate([np.zeros(pad, dtype=y22.dtype), y22])
     if env is None or low is None:
@@ -227,14 +227,14 @@ def beat_grid(y22, bpm, env=None, low=None):
     grid = phases[:, None] + np.arange(n)[None, :] * period
     phase = phases[np.argmax(np.interp(grid, np.arange(len(low)), low).sum(axis=1))]
     points = phase + np.arange(n) * period
-    # сила доли — максимум огибающей в окне ±3 кадра (~17 мс) вокруг точки сетки
+    # beat strength is the envelope maximum within ±3 frames (~17 ms) around the grid point
     strength = np.array([env[max(0, int(round(x)) - 3):int(round(x)) + 4].max() for x in points])
     typical = np.percentile(strength, 75)
     if typical <= 0:
         return None, None
     k0 = int(np.argmax(strength >= 0.5 * typical))
-    t0 = points[k0] * hop                      # грубое начало музыки, в отсчётах
-    step = period * hop                        # длина доли, в отсчётах
+    t0 = points[k0] * hop                      # coarse start of the music, in samples
+    step = period * hop                        # beat length, in samples
 
     ks, ts, ws = [], [], []
     for k in range(0, n - k0):
@@ -244,12 +244,12 @@ def beat_grid(y22, bpm, env=None, low=None):
     ks, ts, ws = np.array(ks), np.array(ts, dtype=float), np.array(ws)
     first, _ = _attack_time(y, int(round(t0)), sr, reach_s=0.03)
     fallback = (round(max(0.0, (first - pad) / sr), 4) if first is not None else None, None)
-    keep = ws >= np.percentile(ws, 40)        # слабые «атаки» — это шум, не удары
+    keep = ws >= np.percentile(ws, 40)        # weak "attacks" are noise, not hits
     ks, ts = ks[keep], ts[keep]
     if len(ks) < 8:
         return fallback
 
-    # Перебор темпа ±0,06 BPM и сдвига ±45 мс: сколько ударов ложится на прямую в пределах 3 мс.
+    # Search tempo ±0.06 BPM and offset ±45 ms: how many hits fall on the line within 3 ms.
     tol = 0.003 * sr
     offsets = np.arange(-0.045, 0.045, 0.0005) * sr
     best_count, best = 0, None
@@ -266,29 +266,29 @@ def beat_grid(y22, bpm, env=None, low=None):
     inl = np.abs(ts - (t0 + off + ks * p)) < tol
     c0, c1 = np.linalg.lstsq(np.vstack([np.ones(inl.sum()), ks[inl]]).T, ts[inl], rcond=None)[0]
     fitted = 60.0 * sr / c1
-    # Темп из DAW обычно «круглый»: 97,4999 -> 97,5. Ошибка округления в 0,01 BPM
-    # за трек набегает меньше чем на пару миллисекунд.
+    # Tempo from a DAW is usually "round": 97.4999 -> 97.5. A rounding error of 0.01 BPM
+    # adds up to less than a couple of milliseconds over a track.
     nice = round(fitted * 2) / 2
     if abs(fitted - nice) < 0.01:
         fitted = nice
-    # Сдвиг пересчитываем под итоговый темп: при «округлённом» темпе старый сдвиг
-    # прямой уже не точен. Медиана устойчива к паре неточных ударов.
+    # Recompute the offset for the final tempo: with a "rounded" tempo the old line
+    # offset is no longer exact. The median is robust to a few imprecise hits.
     c0 = float(np.median(ts[inl] - ks[inl] * (60.0 * sr / fitted)))
     return round(max(0.0, (c0 - pad) / sr), 4), round(float(fitted), 3)
 
 
 class Analyzer:
-    """Анализатор. Сессии onnxruntime потокобезопасны, поэтому одни на все рабочие потоки."""
+    """Analyzer. onnxruntime sessions are thread-safe, so all worker threads share them."""
 
     def __init__(self, workers=1):
         paths = [resource_path('models/keynet.onnx'), resource_path('models/deeprhythm.onnx')]
         for p in paths:
             if not p.exists():
-                raise FileNotFoundError(f"Не найден файл модели: {p}")
+                raise FileNotFoundError(f"Model file not found: {p}")
         opts = ort.SessionOptions()
-        # Делим ядра между рабочими потоками, чтобы они не мешали друг другу.
+        # Split the cores between worker threads so they do not get in each other's way.
         opts.intra_op_num_threads = max(1, (os.cpu_count() or 2) // max(1, workers))
-        opts.log_severity_level = 3   # только ошибки: предупреждения onnxruntime засоряют вывод
+        opts.log_severity_level = 3   # errors only: onnxruntime warnings clutter the output
         self.key_model, self.bpm_model = (
             ort.InferenceSession(str(p), opts, providers=['CPUExecutionProvider']) for p in paths)
         self.kernels = dr_features.make_kernels()
@@ -297,10 +297,10 @@ class Analyzer:
         res = Result(path=str(path))
         try:
             if Path(path).suffix.lower() not in SUPPORTED_FORMATS:
-                raise ValueError("формат не поддерживается")
+                raise ValueError("unsupported format")
             y44, res.lead = decode_audio(path)
             if len(y44) < KEY_SR * 3:
-                raise ValueError("трек короче 3 секунд")
+                raise ValueError("track is shorter than 3 seconds")
             camelot, key_name, bpm_raw, conf, downbeat = self._analyze_waveform(y44)
             res.camelot, res.key_name = camelot, key_name
             res.openkey = openkey_of(camelot)
@@ -321,7 +321,7 @@ class Analyzer:
         if clips is not None:
             hcqm = dr_features.compute_hcqm(clips, *self.kernels)
             logits = self.bpm_model.run(None, {'hcqm': hcqm})[0]
-            e = np.exp(logits - logits.max(axis=1, keepdims=True))   # softmax по классам
+            e = np.exp(logits - logits.max(axis=1, keepdims=True))   # softmax over classes
             probs = (e / e.sum(axis=1, keepdims=True)).mean(axis=0)
             cls = int(np.argmax(probs))
             env, env_pad, low_pad = onset_envelopes(y22)
@@ -329,19 +329,19 @@ class Analyzer:
             conf = round(float(probs[cls]), 3)
             downbeat, fitted = beat_grid(y22, bpm, env_pad, low_pad)
             if fitted:
-                bpm = round(fitted, 2)   # темп по ударам точнее оценки сети
+                bpm = round(fitted, 2)   # tempo from the hits beats the network's estimate
         return camelot_of(class_id), KEY_NAMES[class_id], bpm, conf, downbeat
 
 
 def describe_error(e):
-    """Понятный текст ошибки для человека, без трассировки."""
+    """Readable error text for a person, without a traceback."""
     if isinstance(e, FileNotFoundError):
-        return "файл не найден"
+        return "file not found"
     if isinstance(e, PermissionError):
-        return "нет доступа к файлу"
+        return "no access to the file"
     if isinstance(e, av.error.InvalidDataError):
-        return "файл повреждён или это не аудио"
+        return "the file is damaged or is not audio"
     if isinstance(e, MemoryError):
-        return "не хватило памяти (файл слишком длинный)"
+        return "out of memory (the file is too long)"
     text = str(e).strip() or type(e).__name__
     return text

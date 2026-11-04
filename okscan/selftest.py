@@ -1,9 +1,9 @@
 """
-Самопроверка движка на синтетических треках с известным темпом и тональностью.
-Нужна для GitHub Actions и для быстрой проверки после правок.
+Engine self-test on synthetic tracks with a known tempo and key.
+Used by GitHub Actions and for a quick check after edits.
 
-Запуск: python -m okscan.selftest  или  okscan-cli.exe --selftest
-Код выхода 0 — все проверки прошли, 1 — есть ошибки.
+Run: python -m okscan.selftest  or  okscan-cli.exe --selftest
+Exit code 0: all checks passed, 1: there are errors.
 """
 import sys
 import tempfile
@@ -20,7 +20,7 @@ SR = 44100
 
 
 def synth_track(bpm, seconds=60, root_hz=261.63, minor=False):
-    """Бочка на каждую долю, хэт на слабые доли и аккорды I–IV–V–I по тактам."""
+    """Kick on every beat, hat on the offbeats and I-IV-V-I chords by bars."""
     n = int(seconds * SR)
     y = np.zeros(n, dtype=np.float64)
     beat = 60.0 / bpm
@@ -39,14 +39,14 @@ def synth_track(bpm, seconds=60, root_hz=261.63, minor=False):
             y[hpos:hpos + len(hat)] += hat[:n - hpos]
         k += 1
     third = 3 if minor else 4
-    # ступени I, IV, V, I в полутонах
+    # degrees I, IV, V, I in semitones
     for bar, degree in enumerate([0, 5, 7, 0] * int(seconds / (4 * beat) + 1)):
         start = int(bar * 4 * beat * SR)
         if start >= n:
             break
         end = min(n, int((bar + 1) * 4 * beat * SR))
         t = np.arange(end - start) / SR
-        # все аккорды одного наклонения (натуральный минор/мажор) — тональность однозначна
+        # all chords in one mode (natural minor/major): the key is unambiguous
         for semis in (0, third, 7, -12):
             f = root_hz * 2 ** ((degree + semis) / 12)
             y[start:end] += 0.08 * np.sin(2 * np.pi * f * t)
@@ -54,7 +54,7 @@ def synth_track(bpm, seconds=60, root_hz=261.63, minor=False):
 
 
 def write_wav(path, y):
-    """16-битный моно WAV средствами Python — без лишних библиотек в сборке."""
+    """16-bit mono WAV with plain Python: no extra libraries in the build."""
     with wave.open(str(path), 'wb') as w:
         w.setnchannels(1)
         w.setsampwidth(2)
@@ -63,7 +63,7 @@ def write_wav(path, y):
 
 
 CASES = [
-    # (BPM, тональность: частота тоники, минор?, ожидаемый Camelot, тишина перед первой долей, с)
+    # (BPM, key: tonic frequency, minor?, expected Camelot, silence before the first beat, s)
     (128.0, 261.63, False, '8B', 0.337),   # C major
     (174.0, 220.00, True, '8A', 0.0),      # A minor
     (122.5, 392.00, False, '9B', 0.0123),  # G major
@@ -74,7 +74,7 @@ CASES = [
 def main():
     t0 = time.time()
     analyzer = Analyzer(workers=1)
-    print(f"Модели загружены за {time.time() - t0:.1f} с.")
+    print(f"Models loaded in {time.time() - t0:.1f} s.")
     failures = 0
     with tempfile.TemporaryDirectory() as tmp:
         for bpm, root, minor, camelot, lead in CASES:
@@ -82,23 +82,23 @@ def main():
             silence = np.zeros(int(round(lead * SR)), dtype=np.float32)
             write_wav(path, np.concatenate([silence, synth_track(bpm, root_hz=root, minor=minor)]))
             t0 = time.time()
-            # диапазон 88–176 — значение по умолчанию в программе
+            # range 88-176: every test tempo stays as it is
             r = analyzer.analyze(path, bpm_low=88)
             took = time.time() - t0
             if r.error:
-                print(f"ОШИБКА: {path.name}: {r.error}")
+                print(f"ERROR: {path.name}: {r.error}")
                 failures += 1
                 continue
             bpm_ok = abs(r.bpm - bpm) <= 0.3
             key_ok = r.camelot == camelot
-            # первая доля нужна для выравнивания по сетке в REAPER: допуск 2 мс
+            # the first beat is needed for grid alignment in REAPER: tolerance of 2 ms
             beat_ok = r.downbeat is not None and abs(r.downbeat - lead) <= 0.002
             ok = bpm_ok and key_ok and beat_ok
-            print(f"{'OK' if ok else 'ПРОВАЛ'}: ожидалось BPM {bpm}, {camelot}, первая доля {lead} с; "
-                  f"получено BPM {format_bpm(r.bpm)} (сырое {r.bpm_raw}, уверенность {r.bpm_confidence}), "
-                  f"{r.camelot} {r.key_name}, первая доля {r.downbeat} с; {took:.1f} с.")
+            print(f"{'OK' if ok else 'FAILED'}: expected BPM {bpm}, {camelot}, first beat {lead} s; "
+                  f"got BPM {format_bpm(r.bpm)} (raw {r.bpm_raw}, confidence {r.bpm_confidence}), "
+                  f"{r.camelot} {r.key_name}, first beat {r.downbeat} s; {took:.1f} s.")
             failures += not ok
-    print("Самопроверка пройдена." if not failures else f"Провалено проверок: {failures}.")
+    print("Self-test passed." if not failures else f"Failed checks: {failures}.")
     return 1 if failures else 0
 
 

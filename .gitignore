@@ -202,9 +202,9 @@ datasets
 test_output.txt
 checkpoints/custom
 
-# Личная сборка под Windows
+# Windows build
 .venv/
 assets/
 
-# Кэш результатов и numba у консольной версии при запуске из исходников
+# Results cache and numba files of the console version when run from source
 cache/

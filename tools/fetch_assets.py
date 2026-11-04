@@ -1,11 +1,11 @@
 """
-Скачивает файлы, которые не хранятся в git, и проверяет их SHA-256:
-веса модели BPM DeepRhythm 0.7 (AGPL-3.0, github.com/bleugreen/deeprhythm).
-Для сборки не нужно: движок берёт готовый models/deeprhythm.onnx. Веса нужны
-только чтобы заново перевести сеть в ONNX (tools/export_onnx.py).
+Downloads files that are not kept in git and checks their SHA-256:
+the DeepRhythm 0.7 BPM model weights (AGPL-3.0, github.com/bleugreen/deeprhythm).
+Not needed for the build: the engine uses the ready models/deeprhythm.onnx. The weights
+are needed only to convert the network to ONNX again (tools/export_onnx.py).
 
-Запуск: python tools/fetch_assets.py
-Код выхода 0 — всё скачано и проверено, 1 — ошибка (текст в stderr).
+Run: python tools/fetch_assets.py
+Exit code 0: everything is downloaded and verified, 1: error (text in stderr).
 """
 import hashlib
 import sys
@@ -15,10 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS = ROOT / "assets"
 
-# Ссылка закреплена на коммит, чтобы веса не поменялись незаметно.
+# The link is pinned to a commit so that the weights cannot change unnoticed.
 DEEPRHYTHM_URL = ("https://raw.githubusercontent.com/bleugreen/deeprhythm/"
                   "929dfc3eb8f7c2f0355719addc5a7c3216396ad6/deeprhythm-0.7.pth")
-# Хэш опубликован автором в docs/benchmarks.md.
+# The hash is published by the author in docs/benchmarks.md.
 DEEPRHYTHM_SHA256 = "c7cc8cc0425929cd2bf695474d7ec1fd63ed0d0a4a68f361d4e4b57bd9b3d9c4"
 
 
@@ -30,7 +30,7 @@ def download(url):
 def check(data, expected, name):
     actual = hashlib.sha256(data).hexdigest()
     if actual != expected:
-        raise RuntimeError(f"{name}: контрольная сумма не совпала ({actual}), файл не сохранён.")
+        raise RuntimeError(f"{name}: checksum mismatch ({actual}), the file was not saved.")
 
 
 def main():
@@ -38,13 +38,13 @@ def main():
 
     weights = ASSETS / "deeprhythm-0.7.pth"
     if weights.exists() and hashlib.sha256(weights.read_bytes()).hexdigest() == DEEPRHYTHM_SHA256:
-        print("Веса DeepRhythm уже на месте.")
+        print("DeepRhythm weights are already in place.")
     else:
-        print("Скачиваю веса DeepRhythm...")
+        print("Downloading DeepRhythm weights...")
         data = download(DEEPRHYTHM_URL)
         check(data, DEEPRHYTHM_SHA256, "deeprhythm-0.7.pth")
         weights.write_bytes(data)
-        print("Веса DeepRhythm сохранены.")
+        print("DeepRhythm weights saved.")
     return 0
 
 
@@ -52,5 +52,5 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as e:
-        print(f"Ошибка: {e}", file=sys.stderr)
+        print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

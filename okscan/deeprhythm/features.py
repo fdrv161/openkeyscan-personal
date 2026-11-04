@@ -1,7 +1,7 @@
-# Признаки HCQM для DeepRhythm 0.7 (AGPL-3.0, см. __init__.py).
-# Логика повторяет оригинал один в один: от неё зависят выученные веса.
-# Оригинал считает на torch через nnAudio; здесь то же самое на numpy —
-# формулы ядер STFT и CQT перенесены из nnAudio 0.3.3 (MIT).
+# HCQM features for DeepRhythm 0.7 (AGPL-3.0, see __init__.py).
+# The logic follows the original exactly: the trained weights depend on it.
+# The original computes on torch through nnAudio; this is the same in numpy,
+# with the STFT and CQT kernel formulas ported from nnAudio 0.3.3 (MIT).
 import numpy as np
 
 from okscan.dsp import hann
@@ -16,11 +16,11 @@ HOP = 512
 
 
 def make_kernels():
-    """Готовит полосовой фильтр и 6 CQT (по одному на гармонику). Делается один раз."""
+    """Prepares the band filter and 6 CQTs (one per harmonic). Done once."""
     band_filter = _create_log_filter(N_FFT // 2 + 1, N_BANDS)
     cqt_specs = []
     for h in [1/2, 1, 2, 3, 4, 5]:
-        # Частоты здесь — это темп в герцах (BPM / 60), CQT строится по огибающей атак.
+        # Frequencies here are tempo in hertz (BPM / 60): the CQT runs over the onset envelope.
         fmin = (32.7 * h) / 60
         sr_cqt = CLIP_SAMPLES // (HOP * 8)
         fmax = sr_cqt / 2
@@ -30,22 +30,22 @@ def make_kernels():
 
 
 def compute_hcqm(clips, band_filter, cqt_specs):
-    """clips: (N, CLIP_SAMPLES) -> (N, 6, N_BINS, N_BANDS), готово для сети."""
+    """clips: (N, CLIP_SAMPLES) -> (N, 6, N_BINS, N_BANDS), ready for the network."""
     n = len(clips)
-    stft = np.stack([_stft_magnitude(c) for c in clips])          # (N, 1025, кадры)
+    stft = np.stack([_stft_magnitude(c) for c in clips])          # (N, 1025, frames)
     bands = np.matmul(stft.transpose(0, 2, 1), band_filter.T).transpose(0, 2, 1)
     osf = _onset_strength(bands.reshape(n * N_BANDS, bands.shape[2]))
     hcqm = np.stack([_cqt_mean(osf, *spec) for spec in cqt_specs], axis=-1)
-    # Как в оригинале: reshape без перестановки осей (полосы и бины перемешиваются),
-    # на этом порядке сеть и училась.
+    # As in the original: reshape without swapping axes (bands and bins get mixed),
+    # the network was trained on exactly this order.
     hcqm = hcqm.reshape(n, N_BINS, N_BANDS, 6)
     return np.ascontiguousarray(hcqm.transpose(0, 3, 1, 2))
 
 
 def split_clips(audio_22k, max_clips):
-    """Режет звук на 8-секундные куски без перекрытия (хвост отбрасывается).
-    Если кусков больше max_clips, берёт равномерную выборку — для длинных миксов,
-    чтобы не съесть гигабайты памяти. Возвращает None, если трек короче 8 секунд."""
+    """Cuts audio into 8-second clips without overlap (the tail is dropped).
+    With more than max_clips clips, takes an even sample: for long mixes, so as
+    not to eat gigabytes of memory. Returns None if the track is shorter than 8 seconds."""
     n = len(audio_22k) // CLIP_SAMPLES
     if n == 0:
         return None
@@ -55,15 +55,15 @@ def split_clips(audio_22k, max_clips):
 
 
 def _stft_magnitude(x):
-    """nnAudio STFT(n_fft=2048, hop=512, окно Ханна, center=True, pad_mode='reflect'),
-    output_format='Magnitude': (1025, кадры), float32."""
+    """nnAudio STFT(n_fft=2048, hop=512, Hann window, center=True, pad_mode='reflect'),
+    output_format='Magnitude': (1025, frames), float32."""
     x = np.pad(x, N_FFT // 2, mode='reflect')
     frames = np.lib.stride_tricks.sliding_window_view(x, N_FFT)[::HOP]
     return np.abs(np.fft.rfft(hann(N_FFT) * frames, axis=-1)).T.astype(np.float32)
 
 
 def _cqt_kernels(sr, fmin, n_bins, bins_per_octave):
-    """nnAudio create_cqt_kernels (norm=1, окно Ханна, gamma=0) и длины фильтров."""
+    """nnAudio create_cqt_kernels (norm=1, Hann window, gamma=0) and filter lengths."""
     Q = 1.0 / (2 ** (1 / bins_per_octave) - 1)
     freqs = fmin * 2.0 ** (np.r_[0:n_bins] / np.double(bins_per_octave))
     lengths = np.ceil(Q * sr / freqs)
@@ -71,7 +71,7 @@ def _cqt_kernels(sr, fmin, n_bins, bins_per_octave):
     kernels = np.zeros((n_bins, fft_len), dtype=np.complex64)
     for k in range(n_bins):
         l = lengths[k]
-        # Нечётный фильтр сдвигается на отсчёт влево — так в nnAudio.
+        # An odd-length filter is shifted one sample left, as in nnAudio.
         start = int(np.ceil(fft_len / 2.0 - l / 2.0)) - (1 if l % 2 == 1 else 0)
         sig = hann(int(l)) * np.exp(np.r_[-l // 2:l // 2] * 1j * 2 * np.pi * freqs[k] / sr) / l
         kernels[k, start:start + int(l)] = sig / np.sum(np.abs(sig))
@@ -79,12 +79,12 @@ def _cqt_kernels(sr, fmin, n_bins, bins_per_octave):
 
 
 def _cqt_mean(x, kernels, scale):
-    """nnAudio CQT1992v2 (pad_mode='constant', шаг CLIP_SAMPLES // HOP), модуль,
-    усреднённый по кадрам. x: (M, T) -> (M, N_BINS).
+    """nnAudio CQT1992v2 (pad_mode='constant', hop CLIP_SAMPLES // HOP), magnitude
+    averaged over frames. x: (M, T) -> (M, N_BINS).
 
-    Оригинал — свёртка с ядром длиной до 16384 по сигналу из 345 отсчётов,
-    дополненному нулями. Нули ничего не добавляют к сумме, поэтому для каждого
-    кадра берём только тот кусок ядра, что приходится на сам сигнал."""
+    The original convolves a kernel up to 16384 long with a 345-sample signal padded
+    with zeros. Zeros add nothing to the sum, so for each frame we take only the
+    part of the kernel that falls on the signal itself."""
     width = kernels.shape[1]
     hop = CLIP_SAMPLES // HOP
     n, pad = x.shape[1], width // 2
@@ -92,7 +92,7 @@ def _cqt_mean(x, kernels, scale):
     total = np.zeros((x.shape[0], kernels.shape[0]), dtype=np.float32)
     x64 = x.astype(np.float64)
     for f in range(n_frames):
-        start = f * hop - pad                  # начало окна ядра в отсчётах сигнала
+        start = f * hop - pad                  # start of the kernel window, in signal samples
         i0, i1 = max(0, start), min(n, start + width)
         k = kernels[:, i0 - start:i1 - start]
         re = (x64[:, i0:i1] @ k.real.T.astype(np.float64)).astype(np.float32) * scale
@@ -113,11 +113,11 @@ def _create_log_filter(num_bins, num_bands):
 
 
 def amplitude_to_db(x, top_db=80.0):
-    """Замена torchaudio.transforms.AmplitudeToDB(top_db=80) с тем же результатом.
+    """Replacement for torchaudio.transforms.AmplitudeToDB(top_db=80) with the same result.
 
-    Тонкость torchaudio: для входа формы (N, 1, T) порог top_db считается
-    от ОДНОГО общего максимума по всему пакету, а не по каждому куску отдельно.
-    Повторяем это, иначе признаки разойдутся с теми, на которых училась сеть.
+    A torchaudio subtlety: for input of shape (N, 1, T) the top_db threshold is taken
+    from ONE common maximum over the whole batch, not per clip.
+    We repeat this, otherwise the features would differ from those the network learned on.
     """
     x_db = 10.0 * np.log10(np.maximum(x, np.float32(1e-10)))
     return np.maximum(x_db, x_db.max() - np.float32(top_db))

@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
-# Сборка движка для скриптов REAPER: консольная okscan-cli.exe со всеми библиотеками
-# в одной папке. Запуск: pyinstaller --noconfirm okscan.spec
+# Builds the engine for the REAPER scripts: console okscan-cli.exe with all libraries
+# in one folder. Run: pyinstaller --noconfirm okscan.spec
 from pathlib import Path
 
 root = Path.cwd()
@@ -12,8 +12,8 @@ datas = [
     (str(root / 'LICENSE'), 'licenses'),
 ]
 
-# Ненужное для анализа: графика, тесты, оболочки — только раздувают сборку.
-# torch, librosa и прочее для разработчика стоят в той же .venv — не даём им попасть внутрь.
+# Not needed for analysis: graphics, tests, shells only bloat the build.
+# torch, librosa and other developer tools live in the same .venv: keep them out of the build.
 excludes = ['tkinter', 'matplotlib', 'IPython', 'jupyter', 'pytest', 'pandas', 'wx',
             'torch', 'torchaudio', 'torchvision', 'tensorboard', 'nnAudio', 'onnx',
             'librosa', 'numba', 'llvmlite', 'scipy', 'sklearn', 'soundfile']

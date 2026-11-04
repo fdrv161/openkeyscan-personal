@@ -1,15 +1,15 @@
 """
-Консольная версия: тональность и BPM для файлов и папок.
+Console version: key and BPM for files and folders.
 
-Примеры:
+Examples:
   okscan-cli "D:\\Music\\track.mp3"
   okscan-cli "D:\\Music" --csv result.csv
   okscan-cli "D:\\Music" --range 70
   okscan-cli --selftest
-  okscan-cli --list files.txt --out result.tsv   (для скрипта REAPER)
+  okscan-cli --list files.txt --out result.tsv   (for the REAPER script)
 
-Коды выхода: 0 — всё проанализировано, 1 — были ошибки в отдельных файлах,
-2 — неверные параметры или ничего не найдено.
+Exit codes: 0: everything analyzed, 1: errors in some files,
+2: wrong parameters or nothing found.
 """
 import argparse
 import os
@@ -19,13 +19,13 @@ from pathlib import Path
 
 
 def _data_dir():
-    """Папка для кэшей — рядом с программой: всё лежит в одной папке и удаляется вместе
-    с ней. Если туда нельзя писать, берём профиль пользователя."""
+    """Cache folder next to the program: everything sits in one folder and is deleted with
+    it. If that folder is not writable, the user profile is used."""
     base = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
     for d in (base / 'cache', Path(os.environ.get('LOCALAPPDATA', Path.home())) / 'OpenKeyScan'):
         try:
             d.mkdir(parents=True, exist_ok=True)
-            tempfile.TemporaryFile(dir=d).close()   # проверка записи: права папки os.access не видит
+            tempfile.TemporaryFile(dir=d).close()   # write check: os.access does not see folder permissions
             return d
         except OSError:
             continue
@@ -36,41 +36,41 @@ DATA_DIR = _data_dir()
 
 
 def main():
-    # Вывод в UTF-8, иначе русские имена файлов ломаются при перенаправлении в файл.
+    # UTF-8 output, otherwise non-English file names break when redirected to a file.
     for s in (sys.stdout, sys.stderr):
         s.reconfigure(encoding='utf-8')
     p = argparse.ArgumentParser(
         prog='okscan-cli',
-        description="Определяет тональность (Camelot, Open Key) и темп (BPM) аудиофайлов. "
-                    "Файлы только читаются, теги не пишутся.",
-        epilog="Примеры:\n  okscan-cli track.mp3\n  okscan-cli D:\\Music --csv result.csv\n"
-               "  okscan-cli D:\\Music --range 0   (без приведения BPM)",
+        description="Detects the key (Camelot, Open Key) and tempo (BPM) of audio files. "
+                    "Files are only read, no tags are written.",
+        epilog="Examples:\n  okscan-cli track.mp3\n  okscan-cli D:\\Music --csv result.csv\n"
+               "  okscan-cli D:\\Music --range 0   (no BPM folding)",
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('paths', nargs='*', help="файлы или папки (папки — со всеми подпапками)")
+    p.add_argument('paths', nargs='*', help="files or folders (folders with all subfolders)")
     p.add_argument('--range', type=int, default=50, metavar='LOW',
-                   help="приводить BPM к диапазону от LOW до 2×LOW, по умолчанию 50 (50–100, быстрее 100 делится пополам); 0 — не приводить")
-    p.add_argument('--csv', metavar='FILE', help="сохранить результаты в CSV (разделитель «;»)")
-    p.add_argument('--workers', type=int, default=1, help="сколько файлов анализировать одновременно (1–8)")
+                   help="fold BPM into the range from LOW to 2*LOW, default 50 (50 to 100, anything faster is halved); 0: no folding")
+    p.add_argument('--csv', metavar='FILE', help="save results to CSV (semicolon separated)")
+    p.add_argument('--workers', type=int, default=1, help="how many files to analyze at once (1 to 8)")
     p.add_argument('--no-cache', action='store_true',
-                   help="анализировать заново, даже если файл уже есть в кэше (папка cache рядом с программой)")
-    p.add_argument('--selftest', action='store_true', help="проверить движок на синтетических треках")
-    p.add_argument('--list', metavar='FILE', help="список файлов в UTF-8, по одному пути в строке")
+                   help="analyze again even if the file is in the cache (the cache folder next to the program)")
+    p.add_argument('--selftest', action='store_true', help="test the engine on synthetic tracks")
+    p.add_argument('--list', metavar='FILE', help="list of files in UTF-8, one path per line")
     p.add_argument('--out', metavar='FILE',
-                   help="записать результаты в TSV (UTF-8): путь, BPM, Camelot, тональность, Open Key, ошибка, первая сильная доля (с), начало звука в файле (с), уверенность BPM (0–1). "
-                        "Файл появляется целиком в самом конце — по нему скрипт понимает, что анализ закончен")
+                   help="write results to TSV (UTF-8): path, BPM, Camelot, key, Open Key, error, first downbeat (s), start of sound in the file (s), BPM confidence (0 to 1). "
+                        "The file appears whole at the very end: that is how the script knows the analysis is finished")
     args = p.parse_args()
     if args.out:
-        # Что бы ни случилось, файл результата должен появиться — иначе скрипт REAPER ждал бы впустую.
+        # Whatever happens, the result file must appear, otherwise the REAPER script would wait in vain.
         try:
             return run(p, args)
         except Exception as e:
-            write_tsv(args.out, [['ERROR', '', '', '', '', f"сбой анализатора: {e}"]])
+            write_tsv(args.out, [['ERROR', '', '', '', '', f"analyzer failure: {e}"]])
             return 2
     return run(p, args)
 
 
 def write_tsv(path, rows):
-    """Пишет во временный файл и переименовывает: читатель никогда не увидит половину результата."""
+    """Writes to a temporary file and renames it: a reader never sees half a result."""
     tmp = f"{path}.part"
     with open(tmp, 'w', encoding='utf-8', newline='\n') as f:
         for row in rows:
@@ -87,7 +87,7 @@ def run(p, args):
         listed = [ln.strip() for ln in Path(args.list).read_text(encoding='utf-8-sig').splitlines() if ln.strip()]
     if not args.paths and not listed:
         if args.out:
-            write_tsv(args.out, [['ERROR', '', '', '', '', "не передано ни одного файла"]])
+            write_tsv(args.out, [['ERROR', '', '', '', '', "no files were given"]])
         else:
             p.print_help()
         return 2
@@ -95,25 +95,25 @@ def run(p, args):
     from concurrent.futures import ThreadPoolExecutor
     from okscan.library import ResultCache, collect_audio, format_bpm, write_csv, Track
 
-    # Файлы из --list берём как есть: о неподдерживаемом формате анализатор скажет сам.
+    # Files from --list are taken as is: the analyzer reports an unsupported format itself.
     files = listed + collect_audio(args.paths)
     if not files:
-        print("Ошибка: не найдено ни одного поддерживаемого аудиофайла. Проверьте путь.", file=sys.stderr)
+        print("Error: no supported audio files found. Check the path.", file=sys.stderr)
         if args.out:
-            write_tsv(args.out, [['ERROR', '', '', '', '', "не найдено ни одного аудиофайла"]])
+            write_tsv(args.out, [['ERROR', '', '', '', '', "no audio files found"]])
         return 2
     workers = max(1, min(8, args.workers))
     cache = ResultCache(DATA_DIR / 'results.json')
     cached = [None if args.no_cache else cache.get(f, args.range) for f in files]
     todo = [f for f, r in zip(files, cached) if r is None]
-    print(f"Найдено файлов: {len(files)}, уже в кэше: {len(files) - len(todo)}.", file=sys.stderr)
+    print(f"Files found: {len(files)}, already in cache: {len(files) - len(todo)}.", file=sys.stderr)
 
     tracks, errors = [], 0
     with ThreadPoolExecutor(workers) as pool:
         fresh = iter(())
         if todo:
-            # Тяжёлые библиотеки грузим, только если есть что считать: из кэша ответ мгновенный.
-            print("Загружаю модели…", file=sys.stderr)
+            # Load the heavy libraries only if there is something to compute: cached answers are instant.
+            print("Loading models...", file=sys.stderr)
             from okscan.analyzer import Analyzer
             analyzer = Analyzer(workers=workers)
             fresh = pool.map(lambda f: analyzer.analyze(f, bpm_low=args.range), todo)
@@ -124,14 +124,14 @@ def run(p, args):
             name = Path(r.path).name
             if r.error:
                 errors += 1
-                print(f"Файл: {name}, ошибка: {r.error}")
+                print(f"File: {name}, error: {r.error}")
             else:
-                print(f"Файл: {name}, BPM: {format_bpm(r.bpm) or 'нет'}, Camelot: {r.camelot}, "
-                      f"Тональность: {r.key_name}, Open Key: {r.openkey}")
+                print(f"File: {name}, BPM: {format_bpm(r.bpm) or 'none'}, Camelot: {r.camelot}, "
+                      f"Key: {r.key_name}, Open Key: {r.openkey}")
             tracks.append(Track(path=r.path, order=n, result=r))
-            # редкие строки прогресса вместо перерисовки строки — читаются и в логе, и в консоли
+            # occasional progress lines instead of redrawing a line: readable in a log and with a screen reader
             if n % 25 == 0 and n < len(files):
-                print(f"Обработано {n} из {len(files)}", file=sys.stderr)
+                print(f"Processed {n} of {len(files)}", file=sys.stderr)
     cache.save()
 
     if args.out:
@@ -143,8 +143,8 @@ def run(p, args):
                              for t in tracks])
     if args.csv:
         write_csv(args.csv, tracks, args.range)
-        print(f"Результаты сохранены в {args.csv}", file=sys.stderr)
-    print(f"Готово. Файлов: {len(files)}, ошибок: {errors}.", file=sys.stderr)
+        print(f"Results saved to {args.csv}", file=sys.stderr)
+    print(f"Done. Files: {len(files)}, errors: {errors}.", file=sys.stderr)
     return 1 if errors else 0
 
 

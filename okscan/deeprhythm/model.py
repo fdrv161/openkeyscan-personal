@@ -1,5 +1,5 @@
-# Архитектура сети DeepRhythm 0.7 без изменений (AGPL-3.0, см. __init__.py).
-# Нужна только tools/export_onnx.py: движок запускает уже готовый models/deeprhythm.onnx.
+# DeepRhythm 0.7 network architecture, unchanged (AGPL-3.0, see __init__.py).
+# Needed only by tools/export_onnx.py: the engine runs the ready models/deeprhythm.onnx.
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -9,7 +9,7 @@ from okscan.deeprhythm.classes import NUM_CLASSES
 class DeepRhythmModel(nn.Module):
     def __init__(self, num_classes=NUM_CLASSES):
         super().__init__()
-        # Вход: (6 гармоник, 240 бинов, 8 полос)
+        # Input: (6 harmonics, 240 bins, 8 bands)
         self.conv1 = nn.Conv2d(6, 128, kernel_size=(4, 6), padding='same')
         self.bn1 = nn.BatchNorm2d(128)
         self.conv2 = nn.Conv2d(128, 64, kernel_size=(4, 6), padding='same')

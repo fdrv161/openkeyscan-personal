@@ -1,8 +1,8 @@
-# Зависимости движка под Windows x64 (Python 3.14) — только то, что попадает в сборку.
-# Версии закреплены, чтобы сборка на GitHub Actions давала тот же результат, что и локально.
-# Сети запускает onnxruntime (файлы models/*.onnx), звук обрабатывается на numpy.
+# Engine dependencies for Windows x64 (Python 3.14): only what goes into the build.
+# Versions are pinned so that a GitHub Actions build gives the same result as a local one.
+# onnxruntime runs the networks (models/*.onnx), audio is processed with numpy.
 onnxruntime==1.31.1
 numpy==2.5.4
 av==19.0.1
-# soxr — то же понижение частоты, что было внутри librosa (res_type='soxr_hq').
+# soxr: the same downsampling that librosa used inside (res_type='soxr_hq').
 soxr==1.1.0
