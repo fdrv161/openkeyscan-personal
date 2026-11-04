@@ -327,7 +327,9 @@ function M.run(mode)
     end
   end
 
-  local dir = (os.getenv("TEMP") or reaper.GetResourcePath()) .. "\\OpenKeyScan-REAPER"
+  -- Not os.getenv("TEMP"): plain Lua gets it in the system code page, so a non-English
+  -- user name would break the path. REAPER's own functions return UTF-8.
+  local dir = reaper.GetResourcePath() .. "\\Data\\OpenKeyScan"
   reaper.RecursiveCreateDirectory(dir, 0)
   local stamp = tostring(os.time()) .. "_" .. tostring(math.random(100000, 999999))
   local list_path = dir .. "\\list_" .. stamp .. ".txt"

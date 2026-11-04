@@ -60,12 +60,13 @@ def check_file(path, old):
     ref = librosa.cqt(y44, sr=an.KEY_SR, hop_length=8820, n_bins=105, bins_per_octave=24, fmin=65)
     steps['CQT for key'] = rel(np.abs(cqt), np.abs(ref))
 
-    power = dsp.power_spectrum(ref22, an.ONSET_NFFT, an.ONSET_HOP)
     ref_power = np.abs(librosa.stft(ref22, n_fft=an.ONSET_NFFT, hop_length=an.ONSET_HOP)) ** 2
-    steps['power spectrum'] = rel(power, ref_power)
     for name, mel in (('onset envelope', {}), ('bass envelope', {'fmax': 250, 'n_mels': 16})):
-        env = an._onset_env(ref_power, **mel)
+        filters = dsp.mel_filters(feat.SR, an.ONSET_NFFT, **mel)
+        new_S = dsp.mel_spectra(ref22, an.ONSET_NFFT, an.ONSET_HOP, [filters])[0]
         S = librosa.feature.melspectrogram(S=ref_power, sr=feat.SR, n_fft=an.ONSET_NFFT, **mel)
+        steps[f'{name}: mel spectrum'] = rel(new_S, S)
+        env = an._onset_from_mel(new_S)
         ref_env = librosa.onset.onset_strength(S=librosa.power_to_db(S), sr=feat.SR,
                                                hop_length=an.ONSET_HOP)
         steps[name] = rel(env, ref_env)

@@ -61,7 +61,7 @@ Working with the networks takes a separate set of dependencies, `requirements-de
 
 - `tools/export_onnx.py` converts the networks to `models/*.onnx` again if the weights change.
 - `tools/check_parity.py` compares the numpy audio processing with librosa and nnAudio, and the final answers with the result of an older build.
-- `tools/check_lua.py` checks the syntax of the REAPER scripts.
+- `tools/check_lua.py` checks the syntax of the REAPER scripts, `tools/test_lua.py` tests their logic against a fake REAPER. Both need the `lupa` package.
 
 ## Releasing
 

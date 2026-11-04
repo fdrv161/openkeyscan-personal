@@ -50,7 +50,7 @@ If OSARA is installed in REAPER, all messages (start of analysis, result, errors
 
 ## Uninstalling
 
-Delete the OpenKeyScan folder from Scripts and remove the actions from the action list. Temporary analysis files are in the %TEMP%\OpenKeyScan-REAPER folder and are deleted automatically.
+Delete the OpenKeyScan folder from Scripts and remove the actions from the action list. Temporary analysis files are in the Data\OpenKeyScan folder of the REAPER resource path and are deleted automatically.
 
 ## Licenses
 

@@ -36,6 +36,9 @@ KEY_NAMES = [
 # At most 64 clips of 8 seconds (~8.5 minutes) for the tempo estimate: long mixes
 # would otherwise take gigabytes of memory. A normal track fits entirely.
 BPM_MAX_CLIPS = 64
+# 10 minutes from the middle of the track are enough for the key: the key network's memory
+# grows with length, and an hour-long mix would take gigabytes. Normal tracks fit entirely.
+KEY_MAX_SECONDS = 600
 # 10 minutes from the middle of the track are enough to refine the BPM.
 REFINE_MAX_SECONDS = 600
 
@@ -125,10 +128,8 @@ def key_spectrogram(y44):
     return np.ascontiguousarray(spec, dtype=np.float32)[None, None]
 
 
-def _onset_env(power, **mel):
-    """Onset envelope from a ready power spectrum: the same as
-    librosa.onset.onset_strength(y=...), but without a second STFT."""
-    S = dsp.mel_filters(dr_features.SR, ONSET_NFFT, **mel) @ power
+def _onset_from_mel(S):
+    """Onset envelope from a mel spectrum: the same as librosa.onset.onset_strength(y=...)."""
     return dsp.onset_strength(dsp.power_to_db(S), n_fft=ONSET_NFFT, hop=ONSET_HOP)
 
 
@@ -137,9 +138,13 @@ def onset_envelopes(y22):
     bass below 250 Hz with silence, kick and snare below 4 kHz with silence).
     beat_grid needs the leading silence, see PAD_FRAMES."""
     y = np.concatenate([np.zeros(PAD_FRAMES * ONSET_HOP, dtype=y22.dtype), y22])
-    power = dsp.power_spectrum(y, ONSET_NFFT, ONSET_HOP)
-    return (_onset_env(power[:, PAD_FRAMES:]), _onset_env(power),
-            _onset_env(power, fmax=250, n_mels=16), _onset_env(power, fmax=4000, n_mels=64))
+    sr = dr_features.SR
+    full, low, body = dsp.mel_spectra(y, ONSET_NFFT, ONSET_HOP, [
+        dsp.mel_filters(sr, ONSET_NFFT),
+        dsp.mel_filters(sr, ONSET_NFFT, n_mels=16, fmax=250),
+        dsp.mel_filters(sr, ONSET_NFFT, n_mels=64, fmax=4000)])
+    return (_onset_from_mel(full[:, PAD_FRAMES:]), _onset_from_mel(full),
+            _onset_from_mel(low), _onset_from_mel(body))
 
 
 def refine_bpm(y22, coarse, env=None):
@@ -159,7 +164,7 @@ def refine_bpm(y22, coarse, env=None):
         y22 = y22[start:start + REFINE_MAX_SECONDS * sr]
         env = None   # the ready envelope covers the whole track, but the middle is needed
     if env is None:
-        env = _onset_env(dsp.power_spectrum(y22, ONSET_NFFT, hop))
+        env = _onset_from_mel(dsp.mel_spectra(y22, ONSET_NFFT, hop, [dsp.mel_filters(sr, ONSET_NFFT)])[0])
     env = env - env.mean()
     candidates = np.arange(max(coarse - 1.0, 20.0), coarse + 2.0, 0.01)
     beats = np.arange(1, 17)
@@ -335,7 +340,9 @@ class Analyzer:
         return res
 
     def _analyze_waveform(self, y44):
-        logits = self.key_model.run(None, {'spec': key_spectrogram(y44)})[0]
+        start = max(0, (len(y44) - KEY_MAX_SECONDS * KEY_SR) // 2)
+        part = y44[start:start + KEY_MAX_SECONDS * KEY_SR]
+        logits = self.key_model.run(None, {'spec': key_spectrogram(part)})[0]
         class_id = int(logits.argmax(axis=1)[0])
 
         y22 = dsp.resample(y44, KEY_SR, dr_features.SR)

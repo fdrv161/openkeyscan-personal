@@ -64,14 +64,17 @@ def stft(y, n_fft, hop, window):
     return out
 
 
-def power_spectrum(y, n_fft, hop):
-    """np.abs(librosa.stft(y, n_fft, hop)) ** 2 with a Hann window, float32,
-    computed in blocks, without a huge complex array in memory."""
+def mel_spectra(y, n_fft, hop, filters):
+    """filters[i] @ (np.abs(librosa.stft(y, n_fft, hop)) ** 2) with a Hann window, float32.
+    Computed block by block: the full power spectrum of a long mix would take gigabytes,
+    the mel spectra are 8 times smaller."""
     n = 1 + len(y) // hop
-    out = np.empty((n_fft // 2 + 1, n), dtype=np.float32)
+    outs = [np.empty((f.shape[0], n), dtype=np.float32) for f in filters]
     for s, block in _stft_blocks(y, n_fft, hop, hann(n_fft)):
-        out[:, s:s + len(block)] = (np.abs(block) ** 2).T
-    return out
+        power = (np.abs(block) ** 2).T
+        for out, f in zip(outs, filters):
+            out[:, s:s + len(block)] = f @ power
+    return outs
 
 
 # --- Slaney mel scale (librosa: htk=False, norm='slaney') ---
